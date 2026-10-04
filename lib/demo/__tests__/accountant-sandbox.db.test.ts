@@ -170,6 +170,8 @@ describe.skipIf(!available)('accountant persona of the demo sandboxes', () => {
     // Directors are not sandboxes: one visitor counted.
     expect(await service.countSandboxes()).toBe(1)
     expect(await service.sandboxPersona(a.id)).toBe('accountant')
+    // The accountant works in the expert mode.
+    expect((await prisma.userPreference.findUnique({ where: { userId: a.id } }))?.displayMode).toBe('expert')
 
     const members = await membersOf(a)
     const visitorRoles = members.filter((m) => m.userId === a.id).map((m) => m.role)
@@ -339,6 +341,8 @@ describe.skipIf(!available)('accountant persona of the demo sandboxes', () => {
     expect(await switchDemoPersona('director')).toEqual({ ok: true, redirectTo: `/atelier-lumen-${a.key}` })
     a = await visitor(a.id)
     expect(await service.sandboxPersona(a.id)).toBe('director')
+    // The accountant persona was in the expert mode; the director one starts in the simple mode.
+    expect((await prisma.userPreference.findUnique({ where: { userId: a.id } }))?.displayMode).toBe('simple')
     expect((await membersOf(a)).map((m) => [m.userId === a.id, m.role])).toEqual(Array(4).fill([true, 'companyAdmin']))
     expect(await directorsOf(a.key)).toHaveLength(0)
     for (const c of a.companies) {

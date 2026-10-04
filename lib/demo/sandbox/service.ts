@@ -362,6 +362,21 @@ export async function provisionSandbox(
  * already exist (random fictitious numbers): the partial companies are then
  * removed and the seed runs once more with new numbers.
  */
+/**
+ * The display mode a persona starts in: the director (a manager who is not
+ * an accountant) discovers the simple mode, the accountant and the
+ * administrator the expert mode. The visitor can switch at any time in the
+ * sidebar; a persona switch (a rebuild) sets it again.
+ */
+export function personaDisplayMode(persona: DemoPersona): 'simple' | 'expert' {
+  return persona === 'director' ? 'simple' : 'expert'
+}
+
+async function setPersonaDisplayMode(userId: string, persona: DemoPersona): Promise<void> {
+  const displayMode = personaDisplayMode(persona)
+  await prisma.userPreference.upsert({ where: { userId }, create: { userId, displayMode }, update: { displayMode } })
+}
+
 async function seedSandboxCompanies(
   userId: string,
   sandboxKey: string,
@@ -374,6 +389,7 @@ async function seedSandboxCompanies(
     if (names.length > 0) logger.warn(`[demo] unbalanced 2025 balance sheet: ${names.join(', ')}`)
     return names
   }
+  await setPersonaDisplayMode(userId, persona)
   try {
     return unbalanced(await seedDemoCompanies({ ownerId: userId, sandboxKey, persona, now, log }))
   } catch (error) {

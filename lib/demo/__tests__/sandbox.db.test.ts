@@ -140,6 +140,8 @@ describe.skipIf(!available)('private demo sandboxes', () => {
     // The director persona (default) is alone in its companies: no fictional directors.
     expect(await prisma.member.count({ where: { organization: { companyId: { in: a.companies.map((c) => c.id) } } } })).toBe(4)
     expect(await prisma.user.count({ where: { email: { endsWith: '@clients.demo.kledg.com' } } })).toBe(0)
+    // The director persona starts in the simple mode (lib/demo/sandbox/service.ts personaDisplayMode).
+    expect(await prisma.userPreference.findUnique({ where: { userId: a.id }, select: { displayMode: true } })).toEqual({ displayMode: 'simple' })
 
     // Signed in: Better Auth's session cookie was set on the response, for a session of this user.
     const sessionCookie = [...state.cookies.entries()].find(([name]) => name.endsWith('better-auth.session_token'))
