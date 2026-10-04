@@ -23,6 +23,7 @@ import { demoInstanceLinks } from '@/lib/demo/admin/links'
 import { DemoBanner } from '@/components/demo/demo-banner'
 import { DemoLogin } from '@/components/demo/demo-login'
 import { DemoSamplesPanel } from '@/components/demo/samples-panel'
+import { DemoAnalytics } from '@/components/demo/demo-analytics'
 
 /** Above the header of every page of the application frame (company and settings pages). */
 export function InstanceBanner({ user }: { user: InstanceActor }) {
@@ -47,6 +48,15 @@ export function LoginExtra({ redirectTo }: { redirectTo: string }) {
 export function CompanyOverlay(props: { user: InstanceActor }) {
   void props
   return isDemoMode() ? <DemoSamplesPanel /> : null
+}
+
+/**
+ * At the end of <body> on every page. Demo: Vercel Web Analytics (cookieless
+ * page views), with the visitor's sandbox key removed from the paths.
+ */
+export function InstanceDocumentEnd(props: { nonce?: string }) {
+  void props
+  return isDemoMode() ? <DemoAnalytics /> : null
 }
 
 /** The user menu entries (and the matching settings links) shown to `user`: those the policy allows. */
