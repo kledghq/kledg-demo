@@ -10,7 +10,7 @@ import {
   type LedgerEntry,
 } from '../qonto/engine'
 import { DEMO_PROFILES, profileBySlug } from '../qonto/profiles'
-import { LUMEN_MANAGEMENT_FEE, isValidIban, lumenDividend } from '../qonto/profiles/shared'
+import { LUMEN_MANAGEMENT_FEE, isValidIban, lumenDividend, lumenFeeInvoiceDate, lumenFeeInvoiceNumber } from '../qonto/profiles/shared'
 import { LUMEN_PAYROLL } from '../qonto/profiles/atelier-lumen'
 import { VERDIER_STOCK, VERDIER_TNS_CONTRIBUTIONS } from '../qonto/profiles/maison-verdier'
 import {
@@ -20,6 +20,8 @@ import {
   tilleulsLoanTable,
 } from '../qonto/profiles/sci-les-tilleuls'
 import { HOLDING_PARTICIPATION } from '../qonto/profiles/lumen-holding'
+import { DIRECTOR_REIMBURSEMENT, REIMBURSED_REPORT, demoReportTotals, draftReport, submittedReport } from '../expense-reports'
+import { DEMO_BUDGETS, planBudget2026 } from '../budgets'
 
 const FROM = '2025-01-01'
 const TO = '2026-10-31'
@@ -270,7 +272,35 @@ describe('Lumen Holding and Atelier Lumen books agree', () => {
     expect(paid.length).toBeGreaterThan(12)
     expect(received.map((t) => [t.date, t.amount])).toEqual(paid.map((t) => [t.date, t.amount]))
     for (const t of paid) expect(t.amount).toBe(round2(LUMEN_MANAGEMENT_FEE.net * 1.2))
-    for (const t of received) expect(t.booking).toContainEqual({ account: '706', credit: LUMEN_MANAGEMENT_FEE.net })
+    // Each transfer settles the customer account (the invoice carries the revenue and the VAT, on debits).
+    const aux = { number: LUMEN_MANAGEMENT_FEE.customerAux, label: LUMEN_MANAGEMENT_FEE.customerName }
+    for (const t of received) {
+      expect(t.booking).toEqual([{ account: '411', credit: t.amount, auxiliary: aux }])
+      expect(t.vatAccount).toBeNull()
+      const month = Number(t.date.slice(5, 7))
+      expect(t.reference).toBe(lumenFeeInvoiceNumber(Number(t.date.slice(0, 4)), month))
+      expect(paid.find((p) => p.date === t.date)?.reference).toBe(t.reference)
+    }
+  })
+
+  it('invoices the management fees on the first day of each month (VE, 411 / 706 / 44571, VAT on debits)', () => {
+    for (const year of [2025, 2026]) {
+      const invoices = holding.ledger(year).filter((e) => e.journal === 'VE')
+      expect(invoices.map((e) => e.reference)).toEqual(Array.from({ length: 12 }, (_, i) => lumenFeeInvoiceNumber(year, i + 1)))
+      for (const [i, entry] of invoices.entries()) {
+        expect(entry.date).toBe(lumenFeeInvoiceDate(year, i + 1))
+        expect(entry.lines.map((l) => [l.account, l.debit ?? 0, l.credit ?? 0])).toEqual([
+          ['411', 1800, 0],
+          ['706', 0, LUMEN_MANAGEMENT_FEE.net],
+          ['44571', 0, 300],
+        ])
+      }
+      // Every invoice of the year is settled: the customer account is cleared.
+      expect(accountBalance(holding.ledger(year), (c) => c === '411')).toBe(0)
+      // The VAT of the invoices is collected in their month (CA3).
+      expect(holding.monthlyVat(year, 3).collected).toBe(300)
+    }
+    expect(holding.summary(2025).revenue).toBe(12 * LUMEN_MANAGEMENT_FEE.net)
   })
 
   it('receives the dividends voted and paid by Atelier Lumen (457 / 512 on the subsidiary side)', () => {
@@ -293,5 +323,68 @@ describe('Lumen Holding and Atelier Lumen books agree', () => {
     expect(summary.otherIncome).toBe(lumenDividend(2025).amount)
     expect(summary.taxableIncome).toBe(round2(summary.resultBeforeTax - 0.95 * lumenDividend(2025).amount))
     expect(accountBalance(holding.ledger(2025), (c) => c === '261')).toBe(HOLDING_PARTICIPATION)
+  })
+})
+
+describe("Atelier Lumen's president and her expense reports", () => {
+  it('reimburses NDF-0001 with one transfer of exactly what Kledg computes it owes (421)', () => {
+    const totals = demoReportTotals(REIMBURSED_REPORT)
+    const transfers = range('atelier-lumen').filter((t) => t.kind === 'expense_reimbursement')
+    expect(transfers).toHaveLength(1)
+    const [transfer] = transfers
+    expect(transfer).toMatchObject({ date: DIRECTOR_REIMBURSEMENT.date, side: 'debit', account: '421', reference: 'NDF-0001', vatAccount: null })
+    expect(Math.round(transfer.amount * 100)).toBe(totals.totalInclTaxCents)
+    expect(transfer.booking).toEqual([{ account: '421', debit: transfer.amount }])
+    // After the report's period, in the 2026 books.
+    expect(DIRECTOR_REIMBURSEMENT.date > REIMBURSED_REPORT.periodEnd).toBe(true)
+    expect(lumen.ledger(2026).some((e) => e.transactionId === transfer.transactionId)).toBe(true)
+  })
+
+  it('writes reports Kledg accepts: lines in their period, French rates, recoverable VAT by its rules', () => {
+    for (const report of [REIMBURSED_REPORT, submittedReport('2026-09'), draftReport('2026-10')]) {
+      for (const line of report.lines) {
+        expect(line.date >= report.periodStart && line.date <= report.periodEnd).toBe(true)
+        expect([0, 550, 1000, 2000]).toContain(line.vatRateBp ?? 0)
+      }
+      const totals = demoReportTotals(report)
+      expect(totals.lines.every((l) => l.error === null)).toBe(true)
+      expect(totals.totalInclTaxCents).toBeGreaterThan(0)
+    }
+    // Train and hotel: no VAT recovered (CGI ann. II art. 206, IV, 2); the business lunch: recovered.
+    const reimbursed = demoReportTotals(REIMBURSED_REPORT)
+    expect(reimbursed.lines.map((l) => l.recoverableVatCents > 0)).toEqual([false, false, true, false])
+  })
+})
+
+describe('2026 budgets of the demo', () => {
+  for (const [slug, specs] of Object.entries(DEMO_BUDGETS)) {
+    it(`plans ${slug} on class 6 and 7 prefixes, from its 2025 actuals`, () => {
+      const engine = profileBySlug(slug).engine
+      const plan = planBudget2026(engine, specs)
+      expect(new Set(plan.map((l) => l.prefix)).size).toBe(plan.length)
+      for (const line of plan) {
+        expect(line.prefix).toMatch(/^[67][0-9]*$/)
+        expect(line.amounts.length + line.recurring.length).toBeGreaterThan(0)
+        for (const amount of line.amounts) expect(amount.month).toMatch(/^2026-(0[1-9]|1[0-2])$/)
+        for (const item of line.recurring) expect(item.startMonth.startsWith('2026-')).toBe(true)
+        const spec = specs.find((s) => s.prefix === line.prefix)!
+        if (spec.fromActuals) {
+          // Within the rounding of each month of the 2025 actuals times the growth.
+          const others = specs.filter((s) => s.prefix !== spec.prefix && s.prefix.startsWith(spec.prefix))
+          const actual = engine
+            .ledger(2025)
+            .flatMap((e) => e.lines)
+            .filter((l) => l.account.startsWith(spec.prefix) && !others.some((o) => l.account.startsWith(o.prefix)))
+            .reduce((sum, l) => sum + (spec.prefix.startsWith('7') ? -1 : 1) * ((l.debit ?? 0) - (l.credit ?? 0)), 0)
+          const planned = line.amounts.reduce((sum, a) => sum + a.cents, 0) / 100
+          expect(Math.abs(planned - actual * spec.fromActuals.growth)).toBeLessThanOrEqual(6 * spec.fromActuals.step + 0.01)
+        }
+      }
+    })
+  }
+
+  it("budgets Atelier Lumen's management fees at the convention's monthly price", () => {
+    const fees = planBudget2026(lumen, DEMO_BUDGETS['atelier-lumen']).find((l) => l.prefix === '6226')!
+    expect(fees.recurring).toEqual([expect.objectContaining({ cents: LUMEN_MANAGEMENT_FEE.net * 100, frequency: 'MONTHLY', startMonth: '2026-01' })])
   })
 })

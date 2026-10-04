@@ -9,8 +9,35 @@ import { scheduledBusinessDay } from '../engine'
 /** First day of generated activity for every demo company. */
 export const DEMO_EPOCH = '2025-01-01'
 
-/** Monthly management fees invoiced by Lumen Holding to Atelier Lumen, paid on the 25th. */
-export const LUMEN_MANAGEMENT_FEE = { net: 1500, vatRate: 20, day: 25 }
+/**
+ * Monthly management fees of Lumen Holding to Atelier Lumen under their
+ * "Convention d'animation" (lib/management-fees, FIXED pricing, one
+ * subsidiary): 1,500 EUR excluding VAT a month, VAT 20 %, invoiced on the
+ * first day of the month in the series LH-<year>-<sequence> and paid by
+ * Atelier Lumen on the 25th. The holding opted to pay VAT on its services
+ * on debits (CGI art. 269, 2, c), so the VAT of an invoice is due in the
+ * month of the invoice; Atelier Lumen deducts it on payment.
+ */
+export const LUMEN_MANAGEMENT_FEE = {
+  net: 1500,
+  vatRate: 20,
+  day: 25,
+  convention: "Convention d'animation",
+  invoicePrefix: 'LH',
+  /** Auxiliary account of Atelier Lumen among the holding's customers (the first tiers, C00001). */
+  customerAux: 'C00001',
+  customerName: 'Atelier Lumen',
+}
+
+/** Number of the holding's management fee invoice of a month: the month is the sequence of a monthly series. */
+export function lumenFeeInvoiceNumber(year: number, month: number): string {
+  return `${LUMEN_MANAGEMENT_FEE.invoicePrefix}-${year}-${String(month).padStart(3, '0')}`
+}
+
+/** Invoice date of a month's management fees (terme à échoir: the first day of the month). */
+export function lumenFeeInvoiceDate(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, '0')}-01`
+}
 
 /**
  * Dividends paid by Atelier Lumen to Lumen Holding (100% owner): voted at the

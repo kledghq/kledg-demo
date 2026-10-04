@@ -25,7 +25,8 @@ import {
   type RandomCategory,
   type Schedule,
 } from '../engine'
-import { DEMO_EPOCH, LUMEN_MANAGEMENT_FEE, lumenDividend } from './shared'
+import { DEMO_EPOCH, LUMEN_MANAGEMENT_FEE, lumenDividend, lumenFeeInvoiceNumber } from './shared'
+import { DIRECTOR_CLAIMANT, DIRECTOR_REIMBURSEMENT, reimbursedReportTotal } from '@/lib/demo/expense-reports'
 
 /** Monthly payroll of the president (assimilé salarié). */
 export const LUMEN_PAYROLL = {
@@ -287,10 +288,10 @@ const schedules: Schedule[] = [
     day: LUMEN_MANAGEMENT_FEE.day,
     build: (year, month) =>
       expense('management_fees', grossFromNet(LUMEN_MANAGEMENT_FEE.net, LUMEN_MANAGEMENT_FEE.vatRate), LUMEN_MANAGEMENT_FEE.vatRate, {
-        label: `VIR Lumen Holding management fees ${monthName(month)} ${year}`,
+        label: `VIR Lumen Holding management fees ${monthName(month)} ${year} ${lumenFeeInvoiceNumber(year, month)}`,
         counterparty: 'Lumen Holding', category: 'other_service',
         operationType: 'transfer', account: '6226',
-        reference: `LH-${year}-${String(month).padStart(2, '0')}`,
+        reference: lumenFeeInvoiceNumber(year, month),
       }),
   },
   {
@@ -337,6 +338,22 @@ const oneOffs: Record<string, Draft[]> = {
       category: 'hardware_and_equipment', operationType: 'card',
       account: LUMEN_LAPTOP.account, vatAccount: '44562',
     }),
+  ],
+  // Reimbursement of the president's expense report NDF-0001 (lib/demo/expense-reports.ts):
+  // 421 debited, lettered with the report's entry by the seed.
+  [DIRECTOR_REIMBURSEMENT.date]: [
+    {
+      kind: 'expense_reimbursement',
+      side: 'debit',
+      amount: reimbursedReportTotal(),
+      vatRate: null,
+      label: `VIR ${DIRECTOR_CLAIMANT.name} remboursement note de frais ${DIRECTOR_REIMBURSEMENT.number}`,
+      counterparty: DIRECTOR_CLAIMANT.name,
+      category: 'other_expense',
+      operationType: 'transfer',
+      account: DIRECTOR_CLAIMANT.accountCode,
+      reference: DIRECTOR_REIMBURSEMENT.number,
+    },
   ],
   '2026-02-10': [
     expense('equipment', grossFromNet(450, 20), 20, {

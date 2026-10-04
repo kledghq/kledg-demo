@@ -36,6 +36,8 @@ export interface BookingLine {
   debit?: number
   credit?: number
   description?: string
+  /** Auxiliary account of a third-party line (FEC CompAuxNum and CompAuxLib), e.g. the customer of an invoice. */
+  auxiliary?: { number: string; label: string }
 }
 
 export interface DemoTransaction {
@@ -104,7 +106,7 @@ export interface Draft {
 
 /** Accounting entry booked outside the bank journal, or the opening entry. */
 export interface LedgerEntry {
-  journal: 'AN' | 'BQ' | 'OD'
+  journal: 'AN' | 'BQ' | 'OD' | 'VE'
   date: string
   description: string
   reference: string
@@ -446,6 +448,7 @@ export class DemoProfileEngine {
   private readonly baseCache = new Map<string, Draft[]>()
   private readonly vatCache = new Map<string, MonthlyVat>()
   private readonly summaryCache = new Map<number, FiscalYearSummary>()
+  private readonly otherCache = new Map<number, LedgerEntry[]>()
 
   constructor(readonly spec: ProfileSpec) {
     this.totalWeight = spec.randoms.reduce((sum, c) => sum + c.weight, 0)
@@ -534,6 +537,21 @@ export class DemoProfileEngine {
         }
       }
     }
+    // VAT of the invoices booked outside the bank (sales invoices of a
+    // company that pays VAT on debits): due in the month of the invoice.
+    if (this.spec.vatMonthly) {
+      const from = dateKeyOf(year, month, 1)
+      const to = lastDayOfMonth(year, month)
+      for (const entry of this.otherEntries(year)) {
+        if (entry.date < from || entry.date > to) continue
+        for (const line of entry.lines) {
+          const amount = (line.debit ?? 0) - (line.credit ?? 0)
+          if (line.account === VAT_COLLECTED) collected -= amount
+          else if (line.account === VAT_ON_ASSETS) deductibleAssets += amount
+          else if (VAT_DEDUCTIBLE.has(line.account)) deductibleServices += amount
+        }
+      }
+    }
     collected = round2(collected)
     deductibleServices = round2(deductibleServices)
     deductibleAssets = round2(deductibleAssets)
@@ -571,6 +589,14 @@ export class DemoProfileEngine {
 
   /** Entries other than bank, VAT and corporate tax of a year: period entries and depreciation. */
   private otherEntries(year: number): LedgerEntry[] {
+    const cached = this.otherCache.get(year)
+    if (cached) return cached
+    const entries = this.computeOtherEntries(year)
+    this.otherCache.set(year, entries)
+    return entries
+  }
+
+  private computeOtherEntries(year: number): LedgerEntry[] {
     const previous = year > this.epochYear ? this.summary(year - 1) : null
     const entries = [...(this.spec.periodEntries?.(year, previous) ?? [])]
     for (const { asset, amount } of this.depreciation(year)) {

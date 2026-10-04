@@ -76,6 +76,18 @@ import {
   type LedgerEntry,
 } from '@/lib/demo/qonto/engine'
 import { DEMO_API_HISTORY_DAYS, profileBySlug, type DemoBankProfile } from '@/lib/demo/qonto/profiles'
+import { HOLDING_SLUG } from '@/lib/demo/qonto/profiles/lumen-holding'
+import { DIRECTOR_REIMBURSEMENT } from '@/lib/demo/expense-reports'
+import { DEMO_BUDGETS, planBudget2026 } from '@/lib/demo/budgets'
+import {
+  letterBookedFees,
+  seedBudgets,
+  seedDirectorExpenseReports,
+  seedManagementFees,
+  type BookedFeeMonth,
+  type ExpenseReportSeedResult,
+  type ManagementFeeSeedResult,
+} from '@/lib/demo/seed-features'
 
 export interface DemoCompanySeedResult {
   companyId: string
@@ -110,6 +122,13 @@ export interface DemoCompaniesSeedOptions {
 export interface DemoCompaniesSeedResult {
   ledgerCutoff: string
   companies: DemoCompanySeedResult[]
+  /** Management features seeded on top of the books (lib/demo/seed-features.ts). */
+  features: {
+    managementFees: ManagementFeeSeedResult | null
+    expenseReports: ExpenseReportSeedResult | null
+    /** Companies with a 2026 budget. */
+    budgets: number
+  }
 }
 
 type Log = (message: string) => void
@@ -265,10 +284,11 @@ function ledgerRows(
         debit: round2(line.debit ?? 0),
         credit: round2(line.credit ?? 0),
         description: line.description ?? entry.description,
+        auxiliary: line.auxiliary,
       }
     })
     const date = parseDateKey(entry.date)
-    const validation = validateAccountingEntry({ date, lines, description: entry.description })
+    const validation = validateAccountingEntry({ date, lines: lines.map(({ auxiliary, ...line }) => (void auxiliary, line)), description: entry.description })
     if (!validation.valid) {
       throw new Error(`Demo seed (${company.name}): invalid entry ${entry.reference}: ${validation.errors.join(', ')}`)
     }
@@ -296,6 +316,8 @@ function ledgerRows(
         debit: line.debit,
         credit: line.credit,
         description: line.description,
+        auxiliaryAccountNumber: line.auxiliary?.number ?? null,
+        auxiliaryAccountLabel: line.auxiliary?.label ?? null,
       })
     }
     if (entry.transactionId) rows.entryByTransaction.set(entry.transactionId, id)
@@ -436,6 +458,7 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
         vatRegime: c.vatRegime,
         isVatExempt: c.isVatExempt,
         vatExemptReason: c.vatExemptReason,
+        servicesVatOnDebits: c.servicesVatOnDebits ?? false,
         vatNumber: c.isVatExempt ? null : `FR${String(vatKey).padStart(2, '0')}${c.siren}`,
         corporateTaxRegime: c.corporateTaxRegime,
         legalType: c.legalType,
@@ -563,6 +586,18 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
   const rows2025 = plans.map((plan) =>
     ledgerRows({ id: plan.id, name: plan.company.name }, plan.fy2025, plan.accounts2025, plan.journals, plan.profile.engine.ledger(2025), 1)
   )
+  // The holding's management fee invoices, lettered with their payments
+  // (before insertion: lettering stays free on validated entries anyway).
+  const holdingIndex = plans.findIndex((p) => p.profile.engine.slug === HOLDING_SLUG)
+  const holdingPlan = plans[holdingIndex]
+  const bookedFees: BookedFeeMonth[] = []
+  const letterFees = (year: number, rows: LedgerRows, accounts: Map<string, string>, to: string) => {
+    if (!holdingPlan) return
+    const customerAccount = accounts.get('411')
+    if (!customerAccount) return
+    bookedFees.push(...letterBookedFees(year, rows, customerAccount, holdingPlan.profile.engine.transactions(`${year}-01-01`, to)))
+  }
+  if (holdingPlan) letterFees(2025, rows2025[holdingIndex], holdingPlan.accounts2025, '2025-12-31')
   await insertLedger({
     entries: rows2025.flatMap((r) => r.entries),
     drafts: new Set(),
@@ -619,6 +654,7 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
     plan.result.drafts2026 = rows.drafts.size
     return rows
   })
+  if (holdingPlan) letterFees(2026, rows2026[holdingIndex], holdingPlan.accounts2026, cutoff)
   await insertLedger({
     entries: rows2026.flatMap((r) => r.entries),
     drafts: new Set(rows2026.flatMap((r) => [...r.drafts])),
@@ -786,8 +822,64 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
   await prisma.transactionRuleCondition.createMany({ data: conditionRows })
   await prisma.transactionRuleEntryLine.createMany({ data: ruleLineRows })
 
+  // ── Management features: fees, budgets, expense reports ──
+  // The fictional director (accountant and admin personas) prepared the
+  // invoices and wrote her expense reports; in the director persona the
+  // visitor plays her.
+  const lumenIndex = plans.findIndex((p) => p.profile.engine.slug === 'atelier-lumen')
+  const lumenPlan = plans[lumenIndex]
+  const claireId = lumenPlan ? directorIds.get(lumenPlan.company.director.login) : undefined
+  const party = (plan: CompanyPlan) => {
+    const vatKey = (12 + 3 * (Number(plan.company.siren) % 97)) % 97
+    return {
+      id: plan.id,
+      name: plan.company.name,
+      siren: plan.company.siren,
+      vatNumber: plan.company.isVatExempt ? null : `FR${String(vatKey).padStart(2, '0')}${plan.company.siren}`,
+    }
+  }
+  let managementFees: ManagementFeeSeedResult | null = null
+  if (holdingPlan && lumenPlan) {
+    log('Management fee convention and invoices')
+    managementFees = await seedManagementFees({
+      holding: party(holdingPlan),
+      subsidiary: party(lumenPlan),
+      userId: user.id,
+      createdById: claireId ?? user.id,
+      booked: bookedFees,
+    })
+  }
+
+  log('Budgets 2026')
+  const budgets = plans
+    .filter((plan) => DEMO_BUDGETS[plan.profile.engine.slug])
+    .map((plan) => ({ companyId: plan.id, fiscalYearId: plan.fy2026, lines: planBudget2026(plan.profile.engine, DEMO_BUDGETS[plan.profile.engine.slug]) }))
+  await seedBudgets(budgets)
+
+  let expenseReports: ExpenseReportSeedResult | null = null
+  if (lumenPlan) {
+    log('Expense reports')
+    const reimbursement = lumenPlan.profile.engine.transactionsForDay(DIRECTOR_REIMBURSEMENT.date).find((t) => t.kind === 'expense_reimbursement')
+    const rows = rows2026[lumenIndex]
+    const reimbursementEntry = reimbursement ? rows.entryByTransaction.get(reimbursement.transactionId) : undefined
+    const salaries = lumenPlan.accounts2026.get('421')
+    const reimbursementLine =
+      reimbursementEntry && !rows.drafts.has(reimbursementEntry)
+        ? rows.lines.find((l) => l.accountingEntryId === reimbursementEntry && l.accountId === salaries)
+        : undefined
+    expenseReports = await seedDirectorExpenseReports({
+      companyId: lumenPlan.id,
+      claimantUserId: claireId ?? user.id,
+      validatorUserId: user.id,
+      cutoff,
+      now,
+      reimbursementLineId: reimbursementLine?.id ?? null,
+    })
+  }
+
   return {
     ledgerCutoff: cutoff,
     companies: plans.map((plan) => ({ companyId: plan.id, ...plan.result }) as DemoCompanySeedResult),
+    features: { managementFees, expenseReports, budgets: budgets.length },
   }
 }

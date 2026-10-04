@@ -78,6 +78,12 @@ export interface DemoCompany {
   vatRegime: 'normal' | null
   isVatExempt: boolean
   vatExemptReason: string | null
+  /**
+   * Option to pay the VAT on services on debits (CGI art. 269, 2, c):
+   * Company.servicesVatOnDebits. Lumen Holding opted for it, so the VAT of
+   * its management fee invoices is due on the invoice.
+   */
+  servicesVatOnDebits?: boolean
   corporateTaxRegime: 'simplified' | 'normal'
   taxOffice: string
   totalShares: number
@@ -449,6 +455,7 @@ export const DEMO_COMPANIES: readonly DemoCompany[] = [
     sector: 'finance',
     isHolding: true,
     vatRegime: 'normal',
+    servicesVatOnDebits: true,
     isVatExempt: false,
     vatExemptReason: null,
     corporateTaxRegime: 'simplified',
@@ -460,11 +467,14 @@ export const DEMO_COMPANIES: readonly DemoCompany[] = [
     rules: [
       {
         name: 'Management fees Atelier Lumen',
-        description: 'Prestations de direction facturées à la filiale (TVA 20 %)',
+        // The invoice of the month (Frais de gestion, then Factures de vente)
+        // carries the revenue and the VAT (on debits): the transfer settles
+        // the customer account, and the payment is then recorded on the invoice.
+        description: 'Règlement par la filiale de la facture de frais de gestion du mois (compte client 411)',
         autoCreate: true,
         priority: 70,
         conditions: [condition('counterparty', 'equals', 'Atelier Lumen'), credit, condition('label', 'contains', 'management fees')],
-        entryLines: receipt('706', true),
+        entryLines: receipt('411', false),
       },
       {
         name: 'Honoraires expert-comptable',
