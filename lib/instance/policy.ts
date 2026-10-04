@@ -59,8 +59,9 @@ export async function companyWriteRefusal(companyId: string): Promise<ActionRefu
 }
 
 /**
- * API paths (prefixes of the request path) served by routes that
- * authenticate requests themselves, with the reason. The proxy lets them
+ * API paths served by routes that authenticate requests themselves, with
+ * the reason. A path covers itself and the paths under it, on segment
+ * boundaries (lib/instance/api-paths.ts). The proxy lets them
  * through without a session and the route architecture test
  * (lib/api/__tests__/routes.test.ts) accepts their handlers unwrapped.
  */
@@ -89,3 +90,11 @@ export const INSTANCE_RATE_LIMITS = {} as const satisfies Record<string, RateLim
  * through like /login; each page decides for itself what it shows.
  */
 export const PUBLIC_PAGES: readonly string[] = []
+
+/**
+ * Where to send a visitor of /setup without the installation link while
+ * the instance has no administrator yet (a hosted service before launch:
+ * its waitlist), instead of the neutral "Installation en cours" page.
+ * Kledg: null, the neutral page.
+ */
+export const SETUP_PENDING_REDIRECT: string | null = null
