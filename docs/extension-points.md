@@ -20,7 +20,13 @@ these two files change, which is rare.
 ```ts
 isActionAllowed(action: InstanceAction, actor: InstanceActor | null): Promise<boolean>
 actionRefusalMessage(action: InstanceAction): string
+companyCreationRefusal(actor: InstanceActor): Promise<ActionRefusal | null>
+afterCompanyCreated(companyId: string, actor: InstanceActor): Promise<void>
+companyWriteRefusal(companyId: string): Promise<ActionRefusal | null>
 SELF_AUTHENTICATED_API_ROUTES: Record<string, string>
+PUBLIC_PAGES: readonly string[]
+REQUIRE_EMAIL_VERIFICATION: boolean
+INSTANCE_RATE_LIMITS: Record<string, RateLimitRule>
 ```
 
 Kledg checks every restrictable action through `lib/instance`
@@ -43,12 +49,75 @@ account, for instance). A refused action answers 403 with
 | `setup` | `/` and `/setup`: when refused, the first-run setup never opens (`/setup` redirects to `/login`); accounts are provisioned otherwise |
 | `onboarding` | the guided start: the welcome page after setup (`/welcome`, its user menu entry "État de l'instance"), the "Démarrer" checklist of company dashboards and its help menu entry (`GET/POST /api/companies/[id]/onboarding` answers `enabled: false`, hiding it is refused). Empty states of company pages then show their plain action. A demo instance with seeded companies would refuse it |
 
+### Company creation
+
+```ts
+companyCreationRefusal(actor: InstanceActor): Promise<ActionRefusal | null>
+afterCompanyCreated(companyId: string, actor: InstanceActor): Promise<void>
+```
+
+`companyCreationRefusal` decides who may create a company: the creation
+wizard (`/companies/new`), its SIREN prefill (`GET /api/companies/lookup`)
+and `POST /api/companies`. It answers null when `actor` may, else an
+`ActionRefusal` (`lib/instance/types.ts`): a French message and an optional
+link (`{ label, href }`, an upgrade page for instance). Kledg answers null
+for instance administrators only, so nothing changes on a standard instance.
+A fork that replaces the policy file must define it, which keeps company
+creation closed until the fork decides otherwise.
+
+When the policy lets a user who is not an instance administrator create a
+company, that user becomes its administrator (`companyAdmin` member,
+`lib/companies/create-company.service.ts`), the root page sends a user
+without a company to the wizard, and the companies page shows the "Créer"
+button. A refusal answers 403 with the message, its link in the response
+(`{ error, link }`); the wizard page shows the message and the link instead
+of the form. `afterCompanyCreated` runs once the company is ready (a fork
+records who owns it, for instance); Kledg does nothing there.
+
+### Read-only companies
+
+```ts
+companyWriteRefusal(companyId: string): Promise<ActionRefusal | null>
+```
+
+Checked by `assertCompanyWritable` (`lib/companies/archive-company.service.ts`)
+after the archive check, so on every state-changing request of a company
+route (`companyRoute`) and every MCP tool that does more than read. A refusal
+answers 409 with its message and link (`{ error, link }`); reads, reports
+and exports (all GET) keep working. A fork makes a company read-only this
+way (an unpaid subscription, a legal hold) without hiding any data. Kledg
+answers null.
+
 `SELF_AUTHENTICATED_API_ROUTES` maps API path prefixes to the reason they are
 safe without a session (an API key, a `CRON_SECRET` bearer token). The
-request proxy (`proxy.ts`) lets them through and the route architecture test
+request proxy (`proxy.ts`) lets them through, the route architecture test
 (`lib/api/__tests__/routes.test.ts`) accepts their handlers without a route
-wrapper. Keep the policy file free of database and Node imports: the proxy
-imports it.
+wrapper, and the route coverage guard
+(`lib/__tests__/security/route-coverage.test.ts`) leaves them to their own
+tests.
+
+`REQUIRE_EMAIL_VERIFICATION` (Kledg: false) turns on Better Auth's
+`requireEmailVerification` and `sendOnSignIn` (`lib/auth.ts`): an account
+whose address is not confirmed is refused at sign-in, the login page says so
+in French, and the attempt sends the confirmation link again. Member
+accounts created from a company's Membres page are marked confirmed; other
+accounts (first-run setup, Utilisateurs page) confirm at their first sign-in.
+Better Auth's own sign-up endpoint stays closed (`disableSignUp`): an
+instance with public sign-up serves its own sign-up route.
+
+`INSTANCE_RATE_LIMITS` declares the rate limit rules of the instance's own
+routes (`{ name: { window, max, message } }`). `enforceRateLimit(name,
+subject)` (`lib/rate-limit.ts`) applies them like Kledg's rules, in the same
+shared table; a name Kledg already uses keeps Kledg's rule, and every rule
+is checked by `lib/__tests__/rate-limit.test.ts` (positive window and
+maximum, French message without dashes). Kledg declares none.
+
+`PUBLIC_PAGES` lists pages that open without a session (a sign-up page,
+legal notices): the proxy lets each path and the paths under it through,
+like `/login`. Kledg declares none. Keep the policy file free of database and Node imports: the proxy
+imports it. A hook that needs the database (a quota, a subscription) loads
+its module inside the function (`const { check } = await import('@/lib/x')`),
+so the proxy never runs it.
 
 To point Kledg's Qonto client at another API (a simulated one for tests or a
 public sandbox instance), set `QONTO_API_URL`; no code change is needed.
@@ -65,6 +134,7 @@ them server actions (to create an account and sign it in, for instance).
 | `CompanyOverlay` | after the content of company pages (`app/(company)/layout.tsx`); floating UI goes bottom right | `user` |
 | `filterUserMenu(items, user)` | filters the account and instance pages (`components/layout/user-menu.ts`): the user menu entry (`inMenu`) and the settings sidebar links | returns the entries to show |
 | `instanceSettingsLinks(user)` | for a user who is not an instance administrator: the instance's own versions of the administrators' pages, by user menu entry (`{ instance, users, updates }`, absolute URLs). The settings sidebar then shows the "Instance" group with these links only, the breadcrumb names them and the version line links to `updates`. Kledg returns null | returns the links or null |
+| `instanceSettingsPages(user)` | the instance's own settings pages (a billing page, an operator console): `{ group: 'account' \| 'instance', title, url, icon }`, appended to the "Compte" group or to the "Instance" group (shown to instance administrators only) of the settings sidebar, and named by its breadcrumb. `icon` is a name of `INSTANCE_PAGE_ICONS` (`components/layout/settings-nav-config.ts`). Kledg returns none | returns the pages |
 
 Each entry names the restrictable action it leads to (`action`), so a fork
 can hide what its policy refuses (the Profil page has no action: it stays
@@ -102,3 +172,29 @@ Only tokens registered in the page are accepted: a drag from another site or
 a crafted link cannot make the dialog load anything. The dialog announces
 its state with `IMPORT_DIALOG_STATE_EVENT` (open, preview shown) so a panel
 can fold away while a preview needs the room.
+
+## Row level security
+
+With `KLEDG_RLS=enforce` ([rls.md](rls.md)), every statement runs with the
+context of its request: route wrappers, the MCP endpoint, crons, and the
+session of server components and server actions. Code of a fork that runs
+outside those paths (a script, a job that provisions or purges throwaway
+companies, the demo's sandbox) sets its context with `lib/rls/context.ts`:
+
+```ts
+import { withSystemContext, withUserContext } from '@/lib/rls/context'
+
+// A server job without a user, limited to the companies it handles.
+await withSystemContext('instance-extension', () => purgeCompany(id), { companyIds: [id] })
+
+// Work done for a user (an account created and signed in by the fork).
+await withUserContext(userId, () => createDemoCompany(userId))
+```
+
+`'instance-extension'` is the reason reserved to forks; the system
+context reaches every company when `companyIds` is absent, so pass it
+whenever the job concerns known companies. The flags of the database
+guards (`kledg.company_purge`, `kledg.closed_year_bypass`) still work inside
+such a transaction. Add the file to the allowlist of
+`lib/rls/__tests__/system-context-usage.test.ts` in the fork.
+

@@ -67,7 +67,11 @@ describe.skipIf(!available)('address owner migration', () => {
     db = new Client({ connectionString: url })
     await db.connect()
 
-    // The schema before the migration: no owner column (its index and foreign key go with it).
+    // The schema before the migration: no owner column (its index and foreign key go with it),
+    // and none of the row level security policies of a later migration, which read it.
+    for (const policy of ['kledg_rls_select', 'kledg_rls_insert', 'kledg_rls_update', 'kledg_rls_delete']) {
+      await db.query(`DROP POLICY IF EXISTS "${policy}" ON "addresses"`)
+    }
     await db.query(`ALTER TABLE "addresses" DROP COLUMN "companyId"`)
 
     const addr = (id: string, street: string, street2: string | null = null) =>
@@ -228,6 +232,8 @@ describe.skipIf(!available)('address owner migration', () => {
       'companies.headquartersAddressId',
       'establishments.addressId',
       'persons.addressId',
+      // Tiers (20261019090000) create their address through createCompanyAddress and are in deleteAddressesIfUnused
+      'tiers.addressId',
     ])
   })
 })

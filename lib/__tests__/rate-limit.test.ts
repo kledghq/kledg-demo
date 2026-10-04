@@ -20,7 +20,8 @@ vi.mock('@/lib/prisma', () => ({
 }))
 
 import { RateLimitError } from '@/lib/accounting/errors'
-import { enforceRateLimit, RATE_LIMITS, withinRateLimit } from '@/lib/rate-limit'
+import { enforceRateLimit, RATE_LIMIT_RULES, RATE_LIMITS, withinRateLimit } from '@/lib/rate-limit'
+import { INSTANCE_RATE_LIMITS } from '@/lib/instance/policy'
 
 const ROOT = path.resolve(__dirname, '../..')
 
@@ -52,8 +53,12 @@ describe('rate limit policy', () => {
     expect(db.keys).toEqual([])
   })
 
+  it('includes the rules of the instance policy (none in Kledg), never in place of a Kledg rule', () => {
+    expect(RATE_LIMIT_RULES).toEqual({ ...INSTANCE_RATE_LIMITS, ...RATE_LIMITS })
+  })
+
   it('has a positive window, a maximum and a French message without dashes for every rule', () => {
-    for (const [name, rule] of Object.entries(RATE_LIMITS)) {
+    for (const [name, rule] of Object.entries(RATE_LIMIT_RULES)) {
       expect(rule.window, name).toBeGreaterThan(0)
       expect(rule.max, name).toBeGreaterThan(0)
       expect(rule.message, name).toMatch(/^[A-Z]/)
@@ -71,6 +76,8 @@ const LIMITED_ROUTES: Record<string, RegExp> = {
   'app/api/companies/lookup/route.ts': /enforceRateLimit\('siren-lookup'/,
   'app/api/fec/route.ts': /enforceRateLimit\('export'/,
   'app/api/reports/journal/export-excel/route.ts': /enforceRateLimit\('export'/,
+  'app/api/reports/aged-balance/export-excel/route.ts': /enforceRateLimit\('export'/,
+  'app/api/reports/auxiliary-balance/export-excel/route.ts': /enforceRateLimit\('export'/,
   'app/api/companies/[id]/balance-sheet/export-excel/route.ts': /enforceRateLimit\('export'/,
   'app/api/companies/[id]/income-statement/export-excel/route.ts': /enforceRateLimit\('export'/,
   'app/api/companies/[id]/balance-sheet/export-pdf/route.ts': /enforceRateLimit\('export'/,
@@ -93,6 +100,8 @@ const LIMITED_ROUTES: Record<string, RegExp> = {
   'app/api/qonto/statements/route.ts': /limitBankCalls\(/,
   'app/api/qonto/test-connection/route.ts': /limitBankCalls\(/,
   'app/api/qonto/verify/route.ts': /guardBankConnect\(/,
+  'lib/invoices/import-qonto-invoices.service.ts': /limitBankCalls\(/,
+  'lib/invoices/read-invoice-attachment.service.ts': /limitBankCalls\(/,
   'lib/account/change-email.service.ts': /enforceRateLimit\('account-change-email'/,
   'lib/account/change-password.service.ts': /enforceRateLimit\('account-change-password'/,
   'lib/account/delete-account.service.ts': /enforceRateLimit\('account-delete'/,

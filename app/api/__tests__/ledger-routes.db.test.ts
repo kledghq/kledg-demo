@@ -29,6 +29,8 @@ vi.mock('@/lib/rbac/authorize', async () => {
 vi.mock('@/lib/audit', () => ({ writeAuditLog: vi.fn().mockResolvedValue(undefined) }))
 
 import { prepareTestDatabase, testDatabaseAvailable } from '@/lib/__tests__/helpers/test-db'
+import { seedMembership } from '@/lib/__tests__/helpers/membership'
+import { isOptionalPcgAccount } from '@/lib/accounting/pcg-data'
 
 const available = await testDatabaseAvailable()
 
@@ -111,6 +113,8 @@ describe.skipIf(!available)('chart of accounts and journal routes', () => {
   beforeEach(async () => {
     await prepareTestDatabase('ledger_routes')
     const company = await prisma.company.create({ data: { name: 'Atelier', slug: 'atelier', siren: '123456789' } })
+    // The mocked session user is a member in the database too (row level security).
+    await seedMembership(prisma, 'user-1', company.id)
     const other = await prisma.company.create({ data: { name: 'Autre', slug: 'autre', siren: '987654321' } })
     const fy = await prisma.fiscalYear.create({
       data: { companyId: company.id, year: 2026, startDate: new Date('2026-01-01T00:00:00Z'), endDate: new Date('2026-12-31T00:00:00Z') },
@@ -371,7 +375,9 @@ describe.skipIf(!available)('chart of accounts and journal routes', () => {
       expect(added.addedCount).toBeLessThanOrEqual(added.missingCount as number)
       expect(added.message).toMatch(/^\d+ comptes? manquants? ajoutés?$/)
       const required = await prisma.account.findMany({ where: { companyId: ids.company, fiscalYearId: ids.fy } })
-      expect(required.every((a) => a.code.length <= 4 && !a.code.startsWith('8'))).toBe(true)
+      // Only non-optional accounts: up to 4 digits outside class 8, plus the VAT accounts Kledg posts to.
+      expect(required.every((a) => !isOptionalPcgAccount(a.code))).toBe(true)
+      expect(required.some((a) => a.code === '44566')).toBe(true)
 
       // Break one link, then complete again: nothing added, one link fixed
       const a512 = required.find((a) => a.code === '512')!

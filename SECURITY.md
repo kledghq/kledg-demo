@@ -39,11 +39,22 @@ Ce que l'application garantit, pour vous aider à cibler vos tests (détails dan
 - **Application installable** : le service worker ne met en cache que des fichiers publics (page hors ligne, icônes, fichiers de construction à empreinte) ; jamais `/api/*`, une page connectée ou une donnée comptable. La déconnexion supprime les fichiers mis en cache pendant la session et envoie `Clear-Site-Data: "cache"`. Détails dans [docs/configuration.md](docs/configuration.md#sécurité).
 - **Adresse IP** : les en-têtes de proxy ne sont pris en compte que si `TRUST_PROXY_HOPS` (ou `RATE_LIMIT_IP_HEADER`) est défini, ou sur Vercel.
 - **Livres comptables** : une société qui a des écritures validées ou un exercice clôturé ne peut pas être supprimée (conservation 10 ans, Code de commerce art. L123-22), seulement archivée ; le journal d'audit est en ajout seul (déclencheur de la base).
+- **Isolation des sociétés dans la base** (`KLEDG_RLS=enforce`, [docs/rls.md](docs/rls.md)) : chaque table d'une société porte des politiques de sécurité au niveau des lignes ; l'application se connecte avec un rôle qui leur est soumis et chaque transaction indique qui agit. Une requête sans filtre de société ne lit ni n'écrit les lignes d'une société inaccessible, une écriture sans contexte est refusée, un assistant ne dépasse pas les sociétés autorisées. Hors périmètre : une injection SQL capable d'exécuter des requêtes arbitraires (elle pourrait changer le contexte) et l'existence d'une valeur unique (SIREN, identifiant) chez une autre société. Un contournement de ces politiques est une vulnérabilité.
 - **Assistants IA** : en contrôle total, chaque connexion (assistant autorisé ou clé API) a un mode d'exécution des actions à fort impact (valider, contre-passer, supprimer, importer, clôturer...), choisi par l'utilisateur :
   - **Validation dans Kledg** : l'action doit être approuvée par l'utilisateur dans Kledg (session et mot de passe) avant de s'exécuter, une seule fois ; l'assistant ne peut pas l'approuver.
   - **Automatique** (par défaut, décision du mainteneur du 2026-10-04) : l'action s'exécute dès l'appel, sans approbation. Restent appliqués : la portée `kledg:admin`, les sociétés choisies, le rôle de l'utilisateur, la limite d'appels, le journal d'audit (qui nomme l'assistant et note « mode automatique ») et les invariants comptables des services et de la base (écritures validées définitives, exercices clôturés, numérotation). **Risque résiduel accepté** : un texte malveillant présent dans les données (libellé bancaire, relevé, pièce) peut pousser l'assistant à agir à la place de l'utilisateur dans ces limites (injection de requête). L'utilisateur en est averti au moment du choix et peut passer à la validation à tout moment ; le changement s'applique à l'appel suivant. Un signalement qui contourne ces limites reste une vulnérabilité ; une action à fort impact exécutée en mode automatique sur instruction de l'assistant n'en est pas une en soi.
 
   Une connexion sans choix de sociétés n'accède à aucune société ; une clé API sans niveau n'a que la lecture. Seuls Claude et ChatGPT identifiés par leur document de métadonnées (CIMD) sur claude.ai et chatgpt.com portent leur marque sur la page d'autorisation.
+
+## Alertes de dépendances connues
+
+Alertes ouvertes que nous avons analysées et qui n'affectent pas la sécurité de Kledg ni de ses utilisateurs. Nous les corrigerons dès qu'une version corrigée sera publiée.
+
+| Avis | Paquet | Où | Analyse |
+| --- | --- | --- | --- |
+| [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) (déni de service) | `braces` 3.0.3 | site www.kledg.com, dépendance de développement (`shadcn` → `fast-glob` → `micromatch` → `braces`) | Utilisé seulement par l'outil `shadcn` sur le poste du développeur et pendant la construction, sur des motifs écrits par nous. Jamais exécuté sur le site publié ni dans l'application, et aucune donnée d'un visiteur ne l'atteint. Aucune version corrigée n'existe à ce jour : nous mettrons à jour dès sa publication. |
+
+L'application Kledg elle-même n'a aucune alerte ouverte.
 
 ## Versions prises en charge
 

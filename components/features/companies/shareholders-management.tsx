@@ -52,7 +52,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { shareholderSchema, type ShareholderFormData } from './company-informations-schemas'
+import { optionalNumberInput, shareholderSchema, type ShareholderFormData } from './company-informations-schemas'
 import type { Shareholder } from './company-informations-types'
 import { CreatePersonForm } from './create-person-form'
 import { logger } from '@/lib/logger'
@@ -60,10 +60,11 @@ import type { Address } from '@/lib/utils/address'
 
 // Extended Shareholder interface with nested relations
 interface ShareholderWithRelations extends Shareholder {
+  /** A company of this instance: the API selects its SIREN (a company has no SIRET, its establishments do). */
   companyShareholder?: {
     id: string
     name: string
-    siret: string | null
+    siren: string | null
     legalType: string | null
   } | null
   person?: {
@@ -197,6 +198,7 @@ export function ShareholdersManagement({
     address?: Address
   }) => {
     setCreatingPerson(true)
+    let message = 'Erreur lors de la création de la personne'
     try {
       const response = await fetch(`/api/companies/${companyId}/persons`, {
         method: 'POST',
@@ -207,10 +209,9 @@ export function ShareholdersManagement({
       })
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
-        logger.error('Error creating person:', errorData)
-        toast.error(errorData.error || 'Erreur lors de la création de la personne')
-        throw new Error(errorData.error || 'Failed to create person')
+        const errorData = (await response.json().catch(() => ({}))) as { error?: string }
+        if (errorData.error) message = errorData.error
+        throw new Error(message)
       }
 
       const newPerson = await response.json()
@@ -220,7 +221,7 @@ export function ShareholdersManagement({
       await loadPersons()
       
       // Select the newly created person
-      setValueShareholder('personId', newPerson.id)
+      setValueShareholder('personId', newPerson.id, { shouldValidate: true })
       setValueShareholder('createPerson', false)
       
       // Close dialog
@@ -229,7 +230,9 @@ export function ShareholdersManagement({
       toast.success('Personne créée avec succès')
     } catch (error) {
       logger.error('Error creating person:', error)
-      toast.error('Erreur lors de la création de la personne')
+      toast.error(message)
+      // The form keeps what was typed (it resets only after a success).
+      throw error
     } finally {
       setCreatingPerson(false)
     }
@@ -347,9 +350,9 @@ export function ShareholdersManagement({
                           <div className="font-medium">
                             {editingShareholder.companyShareholder.name}
                           </div>
-                          {editingShareholder.companyShareholder.siret && (
+                          {editingShareholder.companyShareholder.siren && (
                             <div className="text-xs text-muted-foreground">
-                              SIRET&nbsp;: {editingShareholder.companyShareholder.siret}
+                              SIREN&nbsp;: {editingShareholder.companyShareholder.siren}
                             </div>
                           )}
                           {editingShareholder.companyShareholder.legalType && (
@@ -465,14 +468,12 @@ export function ShareholdersManagement({
                         <Select
                           value={watchShareholder('personId') || undefined}
                           onValueChange={(value) => {
-                            if (value) {
-                              const selectedPerson = persons.find((p) => p.id === value)
-                              if (selectedPerson) {
-                                setValueShareholder('personId', value)
-                                setValueShareholder('createPerson', false)
-                              }
-                            } else {
-                              setValueShareholder('personId', undefined)
+                            // Radix echoes "" from its hidden native select when the value is
+                            // set before the option exists (a person just created): keep it.
+                            if (!value) return
+                            if (persons.some((p) => p.id === value)) {
+                              setValueShareholder('personId', value, { shouldValidate: errorsShareholder.personId !== undefined })
+                              setValueShareholder('createPerson', false)
                             }
                           }}
                         >
@@ -495,8 +496,8 @@ export function ShareholdersManagement({
                         </Select>
                         <Dialog open={createPersonDialogOpen} onOpenChange={setCreatePersonDialogOpen}>
                           <DialogTrigger asChild>
-                            <Button type="button" variant="outline" size="icon" className="shrink-0">
-                              <Plus className="h-4 w-4" />
+                            <Button type="button" variant="outline" size="icon" className="shrink-0" aria-label="Créer une personne">
+                              <Plus aria-hidden className="h-4 w-4" />
                             </Button>
                           </DialogTrigger>
                           <DialogContent className="max-w-md">
@@ -515,9 +516,13 @@ export function ShareholdersManagement({
                           </DialogContent>
                         </Dialog>
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        Sélectionnez une personne existante ou créez-en une nouvelle avec le bouton +
-                      </p>
+                      {errorsShareholder.personId ? (
+                        <p className="text-sm text-destructive">{errorsShareholder.personId.message}</p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Sélectionnez une personne existante ou créez-en une nouvelle avec le bouton +
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -617,7 +622,7 @@ export function ShareholdersManagement({
                         type="number"
                         step="1"
                         min="1"
-                        {...registerShareholder('numberOfShares', { valueAsNumber: true })}
+                        {...registerShareholder('numberOfShares', { setValueAs: optionalNumberInput })}
                         placeholder="0"
                         className="w-full"
                       />
@@ -632,7 +637,7 @@ export function ShareholdersManagement({
                         type="number"
                         step="0.01"
                         min="0"
-                        {...registerShareholder('capitalAmount', { valueAsNumber: true })}
+                        {...registerShareholder('capitalAmount', { setValueAs: optionalNumberInput })}
                         placeholder="0.00"
                         className="w-full"
                       />
@@ -711,8 +716,8 @@ export function ShareholdersManagement({
                         {isCompanyShareholder && shareholder.companyShareholder ? (
                           <div>
                             <div className="font-medium">{shareholder.companyShareholder.name}</div>
-                            {shareholder.companyShareholder.siret && (
-                              <div className="text-xs text-muted-foreground">SIRET&nbsp;: {shareholder.companyShareholder.siret}</div>
+                            {shareholder.companyShareholder.siren && (
+                              <div className="text-xs text-muted-foreground">SIREN&nbsp;: {shareholder.companyShareholder.siren}</div>
                             )}
                           </div>
                         ) : shareholder.type === 'PHYSICAL' && shareholder.person ? (

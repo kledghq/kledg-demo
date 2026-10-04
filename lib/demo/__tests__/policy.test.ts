@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { handleError } from '@/lib/accounting/errors'
-import { assertActionAllowed, authActionOf, INSTANCE_ACTIONS, isActionAllowed, isSelfAuthenticatedApiPath } from '@/lib/instance'
+import { assertActionAllowed, assertCompanyCreationAllowed, authActionOf, companyWriteRefusal, INSTANCE_ACTIONS, isActionAllowed, isSelfAuthenticatedApiPath } from '@/lib/instance'
 import { isDemoMode } from '..'
 import { ALLOWED_IN_DEMO, REFUSED_IN_DEMO } from '../policy'
 
@@ -58,6 +58,22 @@ describe('instance policy of the demo (lib/instance/policy.ts override)', () => 
     // Renaming goes through Better Auth's /update-user, which no instance action guards.
     expect(authActionOf('/update-user')).toBeNull()
     expect(authActionOf('/change-email')).toBe('change-email')
+  })
+
+  it('refuses company creation to visitors with the demo message, and keeps Kledg\'s rule outside demo mode', async () => {
+    const visitor = { id: 'u2', email: 'visiteur-abc@demo.kledg.com', role: 'user' }
+    vi.stubEnv('KLEDG_DEMO_MODE', 'true')
+    const { message, statusCode } = handleError(await assertCompanyCreationAllowed(visitor).catch((e: unknown) => e))
+    expect(statusCode).toBe(403)
+    expect(message).toContain('démonstration')
+    expect(message).toContain('https://www.kledg.com')
+    vi.stubEnv('KLEDG_DEMO_MODE', 'false')
+    const outside = handleError(await assertCompanyCreationAllowed(visitor).catch((e: unknown) => e))
+    expect(outside.message).toBe("La création de sociétés est réservée aux administrateurs de l'instance.")
+    await expect(assertCompanyCreationAllowed({ ...visitor, role: 'admin' })).resolves.toBeUndefined()
+    // Sandbox companies stay writable: the visitor works in them.
+    vi.stubEnv('KLEDG_DEMO_MODE', 'true')
+    expect(await companyWriteRefusal('c1')).toBeNull()
   })
 
   it('declares the simulated Qonto API and the reset cron as self-authenticated', () => {

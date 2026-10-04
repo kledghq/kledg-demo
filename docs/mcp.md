@@ -11,7 +11,7 @@ Chaque instance Kledg expose un serveur [MCP](https://modelcontextprotocol.io) s
 | Claude Code | `claude mcp add --transport http kledg https://votre-instance/api/mcp --header "Authorization: Bearer kledg_..."` |
 | Scripts, autres clients | En-tête `Authorization: Bearer <clé API>` ou `x-api-key`. |
 
-Dans Kledg, les **Paramètres du compte** ont deux pages :
+Dans Kledg, les **Paramètres** du compte ont deux pages :
 
 - **Assistants IA** (`/settings/assistants`) : l'URL exacte du serveur, la marche à suivre pour Claude, ChatGPT et Claude Code, et les assistants autorisés avec l'accès, le mode d'exécution et les sociétés de chacun, leur modification et leur révocation ;
 - **Clés API** (`/settings/api-keys`) : la création d'une clé (niveau, mode d'exécution, sociétés) et les clés actives, avec leur modification et leur révocation.
@@ -98,6 +98,17 @@ Le nettoyage est fait par la base de données (déclencheurs sur la table des au
 | `get_income_statement` | Compte de résultat d'un exercice |
 | `list_entries` | Écritures (avec leur identifiant), filtrables par date, journal, compte, statut |
 | `list_bank_transactions` | Transactions bancaires, par défaut celles à rapprocher |
+| `get_aged_balance` | Balance âgée à une date : créances clients (411) et dettes fournisseurs (401) non lettrées, par tiers et par ancienneté de l'échéance ([lettrage et tiers](lettrage-et-tiers.md)) ; droit `reports:read` |
+| `list_missing_receipts` | Transactions bancaires sans justificatif, au-dessus d'un seuil, par exercice ou période et par compte ; droit `banking:read` |
+| `list_tiers` | Clients et fournisseurs avec leur compte auxiliaire, leurs identifiants, comptes par défaut et délai de paiement ([factures et tiers](factures-et-tiers.md)) ; droit `entries:read` |
+| `list_invoices` | Factures d'achat ou de vente, avec totaux, statut (brouillon, comptabilisée, payée partiellement, payée) et reste dû ; droit `entries:read` |
+| `get_invoice` | Une facture avec ses lignes, son détail de TVA par taux, son écriture et ses règlements ; droit `entries:read` |
+| `list_expense_reports` | Notes de frais avec bénéficiaire, période, total à rembourser, TVA récupérable et statut (brouillon, soumise, validée, comptabilisée, remboursée) ([notes de frais](notes-de-frais.md)) ; droit `entries:read`, puis seulement ses propres notes sans le droit de valider |
+| `get_expense_report` | Une note de frais avec ses lignes, la TVA récupérable de chacune et sa raison, les trajets et le barème appliqué ; mêmes droits |
+| `get_budget_report` | Budget d'un exercice comparé aux écritures validées : par ligne (début de compte de classe 6 ou 7), budget, réel, écart et pourcentage, comptes hors budget, totaux et résultat, jusqu'à un mois ou mois par mois ([budget](budget.md)) ; droit `reports:read` |
+| `list_detected_subscriptions` | Abonnements détectés dans les opérations bancaires : contrepartie, rythme, montant actuel, coût annuel, dernier et prochain paiement, statut (actif, prix modifié, peut-être arrêté), décision et ligne de budget ; salaires, charges sociales, impôts et emprunts sur demande ([abonnements](abonnements.md)) ; droit `banking:read` |
+| `list_management_fee_conventions` | Conventions de frais de gestion d'une holding avec ses filiales : prix, marge, clé de répartition, TVA ([frais de gestion](frais-de-gestion.md)) ; droit `reports:read` |
+| `preview_management_fees` | Calcul des frais de gestion d'une période, montant HT, TVA et TTC de chaque filiale, sans rien facturer ; droit `reports:read` dans la holding et dans chaque filiale |
 
 ### Lecture et brouillons d'écritures (`kledg:write`)
 
@@ -134,6 +145,11 @@ L'assistant agit comme vous, dans la limite de votre rôle dans chaque société
 | `close_fiscal_year` | Clôturer l'exercice : résultat en 120 / 129, exercice suivant, à-nouveaux, verrouillage définitif | `closing:execute` | Oui |
 | `allocate_result` | Affecter le résultat de l'exercice précédent (réserve légale, dividendes, autres réserves, report à nouveau) | `closing:execute` | Oui |
 | `export_fec` | FEC de l'exercice (contenu du fichier) et rapport de conformité | `reports:export` | Non |
+| `list_unlettered_lines` | Lignes non lettrées d'un compte de tiers (identifiants, montants, compte auxiliaire, solde progressif) et propositions de lettrage | `entries:read` | Non |
+| `letter_entry_lines` | Lettrer des lignes d'un compte de tiers : code suivant du compte et date du jour, débits égaux aux crédits, écritures validées, exercice ouvert | `entries:update` | Oui |
+| `unletter_entry_lines` | Délettrer un code d'un compte de tiers, dans un exercice ouvert | `entries:update` | Oui |
+| `create_draft_invoice` | Enregistrer une facture d'achat ou de vente en brouillon (lignes, plusieurs taux, totaux calculés par Kledg) et, sur demande, son écriture en brouillon dans l'exercice de sa date | `entries:create` | Oui |
+| `create_draft_expense_report` | Préparer une note de frais en brouillon à partir de justificatifs (dépenses, TVA récupérable calculée par Kledg) et de trajets (barème kilométrique de l'année) ; la personne la soumet et un valideur la comptabilise dans Kledg | `expenses:submit` | Oui |
 
 Les opérations répétées n'agissent pas deux fois : un import du même relevé, une nouvelle exécution des règles, une seconde génération des dotations ou un second rapprochement ne créent rien de plus.
 
@@ -154,7 +170,7 @@ Les connexions qui existaient avant l'ajout du mode sont en mode automatique. La
 
 En mode validation, les outils à fort impact ne font rien tant que vous ne les avez pas approuvés **vous-même, dans Kledg**. L'assistant ne peut pas les approuver : un texte piégé lu par l'assistant (libellé bancaire, relevé, document) ne peut donc pas lui faire exécuter une validation, une clôture ou une suppression.
 
-1. Appelés sans `actionId`, ils renvoient un aperçu (`dryRun: true`) de ce qui serait fait : écritures et numéros à attribuer, montants, soldes, analyse du relevé, simulation de la clôture, plan d'affectation, avertissements et blocages. Kledg enregistre une **action en attente** et renvoie son `actionId` et le lien `approvalUrl` de la page **Actions IA à approuver** (Paramètres du compte).
+1. Appelés sans `actionId`, ils renvoient un aperçu (`dryRun: true`) de ce qui serait fait : écritures et numéros à attribuer, montants, soldes, analyse du relevé, simulation de la clôture, plan d'affectation, avertissements et blocages. Kledg enregistre une **action en attente** et renvoie son `actionId` et le lien `approvalUrl` de la page **Actions IA à approuver** (Paramètres).
 2. L'assistant vous montre l'aperçu et vous donne le lien. Sur cette page, connecté à Kledg, vous voyez le même aperçu et les paramètres exacts, puis vous cliquez sur **Approuver** ou **Refuser** et saisissez de nouveau votre mot de passe.
 3. Une fois l'action approuvée, l'assistant rappelle l'outil avec les **mêmes arguments** et l'`actionId`. L'action s'exécute alors, une seule fois.
 

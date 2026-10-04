@@ -11,7 +11,7 @@
  * is not needed to tell them apart).
  */
 
-import type { InstanceAction, InstanceActor } from '@/lib/instance/types'
+import type { ActionRefusal, InstanceAction, InstanceActor } from '@/lib/instance/types'
 import { DEMO_QONTO_API_PATH, isDemoMode, KLEDG_WEBSITE_URL } from './mode'
 
 const REFUSED: Partial<Record<InstanceAction, string>> = {
@@ -52,6 +52,20 @@ export async function demoIsActionAllowed(action: InstanceAction, actor: Instanc
 export function demoRefusalMessage(action: InstanceAction): string {
   const message = REFUSED[action]
   return message ? message + SUFFIX : DEFAULT_REFUSAL
+}
+
+/**
+ * Company creation (lib/instance/policy.ts `companyCreationRefusal`): Kledg's
+ * rule, instance administrators only. A demo visitor is never one (role
+ * "user"), so in demo mode the refusal says why, with the demo's message:
+ * the four fictional companies are the demo.
+ */
+export async function demoCompanyCreationRefusal(actor: InstanceActor): Promise<ActionRefusal | null> {
+  if (actor.role === 'admin') return null
+  if (isDemoMode()) {
+    return { message: `Les sociétés de démonstration sont déjà créées\u00a0: la création de sociétés est désactivée sur l'instance de démonstration.${SUFFIX}` }
+  }
+  return { message: "La création de sociétés est réservée aux administrateurs de l'instance." }
 }
 
 /** Routes of the demo that authenticate requests themselves (see lib/instance/policy.ts). */

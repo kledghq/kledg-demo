@@ -26,8 +26,30 @@ import { writeAuditLog } from '@/lib/audit'
 import { NotFoundError } from '@/lib/accounting/errors'
 import { day, fail, json, run } from '@/lib/mcp/tool-result'
 import { registerFullControlTools } from '@/lib/mcp/full-control'
+import { getAgedBalance } from '@/lib/reports/third-parties/get-third-party-reports.service'
+import type { AgedSection, BucketAmounts } from '@/lib/reports/third-parties/third-party-balances'
+import { listMissingReceipts } from '@/lib/banking/missing-receipts.service'
+import { fromCents, toCents } from '@/lib/utils/money'
+import { listTiers } from '@/lib/tiers/manage-tiers.service'
+import { getInvoice, listInvoices } from '@/lib/invoices/manage-invoices.service'
+import { registerExpenseReportReadTools } from '@/lib/mcp/expense-report-tools'
+import { registerBudgetReadTools } from '@/lib/mcp/budget-tools'
+import { registerManagementFeeTools } from '@/lib/mcp/management-fee-tools'
+import { registerSubscriptionReadTools } from '@/lib/mcp/subscription-tools'
 
 const MAX_ROWS = 200
+
+/** Bucket amounts of the aged balance in euros, for the assistants. */
+function agedEuros(buckets: BucketAmounts) {
+  return {
+    notDue: fromCents(buckets.notDue),
+    overdue0to30: fromCents(buckets.days0to30),
+    overdue31to60: fromCents(buckets.days31to60),
+    overdue61to90: fromCents(buckets.days61to90),
+    overdueOver90: fromCents(buckets.over90),
+    total: fromCents(buckets.totalCents),
+  }
+}
 
 async function resolveFiscalYear(companyId: string, fiscalYearId?: string) {
   const fiscalYear = fiscalYearId
@@ -350,6 +372,237 @@ export function registerKledgTools(server: McpServer, access: McpAccess) {
         return json(transactions.map((t) => ({ ...t, date: day(t.date), bankAccount: t.bankAccount.name })))
       }),
   )
+
+  server.registerTool(
+    'get_aged_balance',
+    {
+      title: 'Balance âgée',
+      description:
+        "Returns the aged balance (balance âgée) of a company on a day: unlettered customer (411) and supplier (401) lines per tiers (auxiliary account, else account), bucketed by days past their due date (not due, 0-30, 31-60, 61-90, over 90 days). Due date = entry date + the company's payment terms (30 days by default, capped at 60 days or 45 days end of month by Code de commerce art. L441-10). Amounts in euros, positive when owed.",
+      inputSchema: z.object({
+        companyId,
+        fiscalYearId,
+        asOf: isoDate.optional().describe('Report day (yyyy-mm-dd) within the fiscal year. Defaults to today.'),
+        kind: z.enum(['customers', 'suppliers', 'all']).default('all').describe('customers (créances clients), suppliers (dettes fournisseurs) or both.'),
+      }),
+      annotations: readOnly,
+    },
+    ({ companyId, fiscalYearId, asOf, kind }) =>
+      run(async () => {
+        await guard.require(companyId, { reports: ['read'] })
+        const report = await getAgedBalance(companyId, { fiscalYearId, asOf })
+        const section = (s: AgedSection) => ({
+          totals: agedEuros(s.totals),
+          tiers: s.tiers.slice(0, MAX_ROWS).map((t) => ({
+            tiers: t.code,
+            label: t.label,
+            accounts: t.accountCodes,
+            oldestDueDate: t.oldestDueDate,
+            ...agedEuros(t.buckets),
+          })),
+          truncated: s.tiers.length > MAX_ROWS,
+        })
+        return json({
+          fiscalYear: report.fiscalYear,
+          asOf: report.asOf,
+          paymentTerms: report.terms,
+          ...(kind !== 'suppliers' && { customers: section(report.customers) }),
+          ...(kind !== 'customers' && { suppliers: section(report.suppliers) }),
+        })
+      }),
+  )
+
+  server.registerTool(
+    'list_missing_receipts',
+    {
+      title: 'Justificatifs manquants',
+      description:
+        'Lists bank transactions without a supporting document (justificatif, Code de commerce art. L123-22: kept 10 years), newest first, at or above an amount threshold, over a fiscal year or a period, optionally for one bank account. Receipts are attached at the bank (Qonto) and synced into Kledg.',
+      inputSchema: z.object({
+        companyId,
+        fiscalYearId: z.string().optional().describe('Fiscal year id, from list_fiscal_years: its dates bound the list.'),
+        from: isoDate.optional(),
+        to: isoDate.optional(),
+        bankAccountId: z.string().optional(),
+        minAmount: z.number().min(0).max(1e12).default(0).describe('Threshold in euros: transactions of at least this amount.'),
+        side: z.enum(['debit', 'credit', 'all']).default('all').describe('debit: money out (purchases), credit: money in.'),
+        limit: z.number().int().min(1).max(MAX_ROWS).default(50),
+      }),
+      annotations: readOnly,
+    },
+    (args) =>
+      run(async () => {
+        await guard.require(args.companyId, { banking: ['read'] })
+        const result = await listMissingReceipts(args.companyId, {
+          fiscalYearId: args.fiscalYearId,
+          startDate: args.from,
+          endDate: args.to,
+          bankAccountId: args.bankAccountId,
+          minAmount: toCents(args.minAmount) ?? 0,
+          side: args.side,
+          limit: args.limit,
+        })
+        return json({
+          period: result.period,
+          threshold: fromCents(result.thresholdCents),
+          count: result.count,
+          total: fromCents(result.totalCents),
+          truncated: result.truncated,
+          transactions: result.transactions.map((t) => ({
+            id: t.id,
+            date: t.date,
+            label: t.label,
+            counterparty: t.counterpartyName,
+            amount: fromCents(t.amountCents),
+            bankAccount: t.bankAccount.displayName || t.bankAccount.name,
+            reconciled: t.reconciled,
+          })),
+        })
+      }),
+  )
+
+  server.registerTool(
+    'list_tiers',
+    {
+      title: 'Clients et fournisseurs',
+      description:
+        'Lists the customers and suppliers (tiers) of a company with their auxiliary account number (FEC CompAuxNum, used by lettering and the aged balance), identifiers, default accounts and payment terms. Use the id or the auxiliary number with list_invoices and create_draft_invoice.',
+      inputSchema: z.object({
+        companyId,
+        kind: z.enum(['CUSTOMER', 'SUPPLIER']).optional(),
+        search: z.string().max(100).optional().describe('Part of the name, auxiliary number, SIREN or VAT number.'),
+        limit: z.number().int().min(1).max(MAX_ROWS).default(100),
+      }),
+      annotations: readOnly,
+    },
+    (args) =>
+      run(async () => {
+        await guard.require(args.companyId, { entries: ['read'] })
+        const result = await listTiers(args.companyId, { kind: args.kind, search: args.search, limit: args.limit })
+        return json({
+          total: result.total,
+          truncated: result.truncated,
+          tiers: result.tiers.map((t) => ({
+            id: t.id,
+            kind: t.kind,
+            name: t.name,
+            auxiliaryAccountNumber: t.auxiliaryAccountNumber,
+            siren: t.siren,
+            vatNumber: t.vatNumber,
+            collectiveAccount: t.collectiveAccountCode,
+            defaultAccount: t.defaultAccountCode,
+            defaultVatRatePercent: t.defaultVatRateBp === null ? null : t.defaultVatRateBp / 100,
+            paymentTerms: t.paymentTermsDays === null ? null : { days: t.paymentTermsDays, endOfMonth: t.paymentTermsEndOfMonth },
+            invoiceCount: t._count.invoices,
+          })),
+        })
+      }),
+  )
+
+  server.registerTool(
+    'list_invoices',
+    {
+      title: 'Factures',
+      description:
+        'Lists the purchase or sales invoices recorded in Kledg, newest first, with their totals, status (draft, posted, partially_paid, paid: derived from lettering and the bank payments recorded) and amount still due. Kledg records invoices (entered or imported from Qonto); it does not issue them.',
+      inputSchema: z.object({
+        companyId,
+        direction: z.enum(['SALE', 'PURCHASE']),
+        status: z.enum(['all', 'draft', 'posted']).default('all'),
+        tiersId: z.string().optional(),
+        search: z.string().max(100).optional().describe('Part of the number, label or tiers name.'),
+        from: isoDate.optional(),
+        to: isoDate.optional(),
+        limit: z.number().int().min(1).max(MAX_ROWS).default(50),
+      }),
+      annotations: readOnly,
+    },
+    (args) =>
+      run(async () => {
+        await guard.require(args.companyId, { entries: ['read'] })
+        const page = await listInvoices(args.companyId, {
+          direction: args.direction,
+          status: args.status,
+          tiersId: args.tiersId,
+          search: args.search,
+          startDate: args.from,
+          endDate: args.to,
+          limit: args.limit,
+        })
+        return json({
+          truncated: page.nextCursor !== null,
+          invoices: page.items.map((i) => ({
+            id: i.id,
+            number: i.number,
+            creditNote: i.typeCode === '381',
+            issueDate: i.issueDate,
+            dueDate: i.dueDate,
+            tiers: i.tiers.name,
+            tiersAuxiliaryAccount: i.tiers.auxiliaryAccountNumber,
+            totalExclTax: fromCents(i.totalExclTaxCents),
+            totalVat: fromCents(i.totalVatCents),
+            totalInclTax: fromCents(i.totalInclTaxCents),
+            paid: fromCents(i.paidCents),
+            remaining: fromCents(i.remainingCents),
+            status: i.status,
+            entryNumber: i.entry?.entryNumber ?? null,
+            source: i.source,
+          })),
+        })
+      }),
+  )
+
+  server.registerTool(
+    'get_invoice',
+    {
+      title: 'Facture',
+      description:
+        'One invoice with its lines (quantity, unit price excluding tax, VAT rate, account), VAT breakdown per rate, entry, payments recorded from the bank and status.',
+      inputSchema: z.object({ companyId, invoiceId: z.string().describe('Invoice id, from list_invoices.') }),
+      annotations: readOnly,
+    },
+    (args) =>
+      run(async () => {
+        await guard.require(args.companyId, { entries: ['read'] })
+        const invoice = await getInvoice(args.companyId, args.invoiceId)
+        return json({
+          id: invoice.id,
+          direction: invoice.direction,
+          number: invoice.number,
+          creditNote: invoice.typeCode === '381',
+          issueDate: invoice.issueDate,
+          dueDate: invoice.dueDate,
+          tiers: invoice.tiers,
+          parties: invoice.parties,
+          status: invoice.status,
+          lines: invoice.lines.map((l) => ({
+            label: l.label,
+            quantity: l.quantity,
+            unitPrice: fromCents(l.unitPriceCents),
+            vatRatePercent: l.vatRateBp / 100,
+            totalExclTax: fromCents(l.totalExclTaxCents),
+            accountCode: l.accountCode,
+            nature: l.nature,
+            fixedAsset: l.fixedAsset,
+          })),
+          vatBreakdown: invoice.vatBreakdown.map((b) => ({ ratePercent: b.vatRateBp / 100, base: fromCents(b.baseCents), vat: fromCents(b.vatCents) })),
+          totalExclTax: fromCents(invoice.totalExclTaxCents),
+          totalVat: fromCents(invoice.totalVatCents),
+          totalInclTax: fromCents(invoice.totalInclTaxCents),
+          paid: fromCents(invoice.paidCents),
+          remaining: fromCents(invoice.remainingCents),
+          lettering: invoice.letteringCode,
+          entry: invoice.entry,
+          payments: invoice.payments.map((p) => ({ amount: fromCents(p.amountCents), entryNumber: p.entry.entryNumber, date: p.entry.date })),
+          source: invoice.source,
+        })
+      }),
+  )
+
+  registerExpenseReportReadTools(server, access, guard)
+  registerBudgetReadTools(server, guard)
+  registerManagementFeeTools(server, access, guard)
+  registerSubscriptionReadTools(server, guard)
 
   // Full control (kledg:admin): validate, reconcile, import, close... Never
   // registered without it; each tool checks it again through the guard.

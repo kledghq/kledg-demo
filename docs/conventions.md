@@ -22,6 +22,7 @@ Related docs: [architecture.md](architecture.md) (folders, principles),
 | Allowlists stay honest | `lib/__tests__/conventions-allowlist.test.ts` |
 | Migrations immutable and additive | `scripts/check-migrations.mjs` (CI) |
 | Authorization of every route and role, no secret in responses | `lib/api/__tests__/authorization-matrix.test.ts` |
+| Every route, service and MCP tool has a test | `lib/__tests__/feature-tests.test.ts` |
 
 ## Architecture
 
@@ -260,6 +261,8 @@ it must hold for every code path, by the database (trigger in a migration).
 | Definitive number given at validation, in fiscal year sequence | `validateEntryInTx` under `lockEntryNumbering` | |
 | A closed fiscal year never changes (PCG art. 1031-4) | `assertFiscalYearOpen`, `assertDateInOpenFiscalYear` | `kledg_lock_closed_year_*`, `kledg_lock_closed_fiscal_years` |
 | Entries are created through one path | `createEntryInTx` (drafts) and `validateEntryInTx` | |
+| Lettering groups balance, one code sequence per account, never in a closed year (`docs/lettrage-et-tiers.md`) | `lib/lettering/lettering.service.ts` under an advisory lock per account | the triggers leave `letteringCode` and `letteringDate` free on validated lines |
+| An invoice posts once, to the fiscal year containing its date only, with accounts of that year's chart; its amounts come from its lines in cents (`docs/factures-et-tiers.md`) | `lib/invoices/post-invoice.service.ts` under the invoice row lock, `lib/invoices/amounts.ts` | check constraints on `invoices` (TTC = HT + TVA), `invoice_payments.entryLineId` unique |
 
 - Create entries only through `createEntryInTx` / `createEntry`; never
   `prisma.accountingEntry.create` elsewhere.
@@ -285,6 +288,14 @@ it must hold for every code path, by the database (trigger in a migration).
 - Authorization everywhere: every route through a wrapper, every row
   scoped by company (see API routes). A non-member gets 404, like a missing
   company, so ids of other companies are never confirmed.
+- **Row level security** repeats the company scoping in PostgreSQL
+  (`KLEDG_RLS=enforce`, [rls.md](rls.md)). A new table gets its
+  `kledg_rls_*` policies in its migration, or an exemption with its reason in
+  `lib/rls/tables.ts` (enforced by `lib/rls/__tests__/policy-coverage.db.test.ts`).
+  Code outside a request (a job, a script) runs inside `withSystemContext`
+  with a documented reason, or `withUserContext`; never as the system on
+  behalf of a user. Cross-company checks (SIREN or slug uniqueness) go
+  through a `SECURITY DEFINER` function that answers a boolean only.
 - Secrets at rest are encrypted with `encrypt`/`decrypt`
   (`lib/integrations/encryption.ts`) and the instance key
   (`lib/crypto/encryption-key.ts`); they are never returned by an API.
@@ -362,6 +373,26 @@ it must hold for every code path, by the database (trigger in a migration).
 | Component | `*.test.tsx` | jsdom | shared components, a11y contracts |
 | Architecture | `lib/__tests__/architecture.test.ts`, `routes.test.ts`... | the source tree | the rules of this document |
 
+- **Every feature has a test** (enforced by `lib/__tests__/feature-tests.test.ts`):
+  - every route file (`app/**/route.ts`) is imported by a test other than the
+    generic guards (authorization matrix, route coverage), which only check
+    status codes;
+  - every service (`lib/**/*.service.ts`) is imported by a test, or by a
+    route that a test imports without mocking the service (routes are thin,
+    so testing the route tests its service);
+  - every MCP tool (`registerTool('name'`, `fullControlTool({ name: 'name'`)
+    is named by a test.
+
+  A `vi.mock` of a module does not count. Files that legitimately have no
+  test of their own go in the `ALLOWLIST` of that test with the reason
+  (types-only module, pure re-export); it is empty today. An entry that gets
+  a test or disappears fails the test until it is removed, so the list stays
+  minimal. The check proves nobody forgot a test, not that the test is good:
+  assert behaviour with concrete values (figures, French messages, rows
+  written, status codes), never a snapshot alone or a bare import.
+- Measure with `pnpm test:coverage` (v8, report in `coverage/`), with the
+  database tests enabled (`KLEDG_REQUIRE_TEST_DB=1`): without them the
+  services they cover read as untested.
 - Deterministic: inject `now` (`todayUtc(now)`) instead of reading the
   clock; set `TZ` explicitly in date tests; no network.
 - Every accounting or tax rule has a test naming its source, and a

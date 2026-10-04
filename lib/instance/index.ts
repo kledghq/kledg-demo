@@ -6,18 +6,27 @@
  */
 
 import { ForbiddenError } from '@/lib/accounting/errors'
-import { actionRefusalMessage, isActionAllowed } from './policy'
+import { actionRefusalMessage, companyCreationRefusal, isActionAllowed } from './policy'
 import type { InstanceAction, InstanceActor } from './types'
 
-export { actionRefusalMessage, isActionAllowed } from './policy'
-export { INSTANCE_ACTIONS, type InstanceAction, type InstanceActor } from './types'
-export { isSelfAuthenticatedApiPath } from './api-paths'
+export { actionRefusalMessage, afterCompanyCreated, companyCreationRefusal, companyWriteRefusal, isActionAllowed } from './policy'
+export { INSTANCE_ACTIONS, type ActionRefusal, type InstanceAction, type InstanceActor } from './types'
+export { isInstancePublicPage, isSelfAuthenticatedApiPath } from './api-paths'
 
 /** Throws a 403 ForbiddenError with the policy's message when `action` is refused to `actor`. */
 export async function assertActionAllowed(action: InstanceAction, actor: InstanceActor | null = null): Promise<void> {
   if (!(await isActionAllowed(action, actor))) {
     throw new ForbiddenError(actionRefusalMessage(action))
   }
+}
+
+/**
+ * Throws a 403 ForbiddenError when the policy refuses `actor` the creation
+ * of a company; its `link` (an upgrade page) is in the response details.
+ */
+export async function assertCompanyCreationAllowed(actor: InstanceActor): Promise<void> {
+  const refusal = await companyCreationRefusal(actor)
+  if (refusal) throw new ForbiddenError(refusal.message).withDetails(refusal.link ? { link: refusal.link } : {})
 }
 
 const AUTH_PATH_ACTIONS: Readonly<Record<string, InstanceAction>> = {

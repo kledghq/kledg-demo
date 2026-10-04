@@ -3,24 +3,36 @@ import {
   BookMarked,
   BookOpen,
   BookText,
+  BookUser,
+  FileInput,
+  FileOutput,
   Calendar,
+  Contact,
   CalendarClock,
   FileCode,
   FileText,
   FolderSearch,
+  Hourglass,
   Info,
   Landmark,
   LayoutDashboard,
   LineChart,
+  Link2,
   ListChecks,
   ListTree,
+  Network,
   Package,
+  Receipt,
+  ReceiptText,
+  Repeat,
   Scale,
   ScrollText,
   Table,
+  Target,
   TrendingDown,
   Upload,
   Users,
+  Wallet,
   Workflow,
   type LucideIcon,
 } from "lucide-react"
@@ -29,6 +41,8 @@ export interface NavItem {
   title: string
   url: string
   icon: LucideIcon
+  /** Shown only in a holding: a company recorded as shareholder of another company (lib/management-fees/holding.ts). */
+  holdingOnly?: boolean
 }
 
 export interface NavGroup {
@@ -51,7 +65,20 @@ export const navGroups: NavGroup[] = [
       { title: "Relevés", url: "/banking/statements", icon: ScrollText },
       { title: "Transactions", url: "/transactions", icon: ArrowLeftRight },
       { title: "Rapprochement", url: "/reconciliation", icon: ListChecks },
+      { title: "Justificatifs manquants", url: "/banking/missing-receipts", icon: Receipt },
+      { title: "Abonnements", url: "/subscriptions", icon: Repeat },
       { title: "Règles d'affectation", url: "/rules", icon: Workflow },
+    ],
+  },
+  {
+    label: "Factures",
+    items: [
+      { title: "Factures d'achat", url: "/invoices/purchases", icon: FileInput },
+      { title: "Factures de vente", url: "/invoices/sales", icon: FileOutput },
+      { title: "Tiers", url: "/tiers", icon: BookUser },
+      { title: "Notes de frais", url: "/expense-reports", icon: ReceiptText },
+      { title: "Mes notes de frais", url: "/expense-reports/mine", icon: Wallet },
+      { title: "Frais de gestion", url: "/management-fees", icon: Network, holdingOnly: true },
     ],
   },
   {
@@ -59,6 +86,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { title: "Écritures", url: "/entries", icon: FileText },
       { title: "Comptes", url: "/accounts", icon: FolderSearch },
+      { title: "Lettrage", url: "/lettering", icon: Link2 },
       { title: "Immobilisations", url: "/fixed-assets", icon: Package },
       { title: "Import", url: "/import", icon: Upload },
     ],
@@ -68,8 +96,11 @@ export const navGroups: NavGroup[] = [
     items: [
       { title: "Bilan", url: "/reports/balance-sheet", icon: Scale },
       { title: "Compte de résultat", url: "/reports/income-statement", icon: LineChart },
+      { title: "Budget", url: "/budget", icon: Target },
       { title: "Balance", url: "/reports/trial-balance", icon: Table },
       { title: "Grand livre", url: "/reports/grand-livre", icon: BookOpen },
+      { title: "Balance auxiliaire", url: "/reports/auxiliary-balance", icon: Contact },
+      { title: "Balance âgée", url: "/reports/aged-balance", icon: Hourglass },
       { title: "Journal", url: "/reports/journal", icon: BookText },
       { title: "Amortissements", url: "/reports/depreciation", icon: TrendingDown },
       { title: "FEC", url: "/reports/fec", icon: FileCode },
@@ -105,6 +136,18 @@ const subPages: Array<{ path: string; title: string }> = [
   { path: "/entries/[id]/edit", title: "Modifier l'écriture" },
   { path: "/entries/[id]", title: "Écriture" },
   { path: "/fiscal-years/opening-balances", title: "Bilan d'ouverture" },
+  { path: "/invoices/new", title: "Nouvelle facture" },
+  { path: "/invoices/[id]/edit", title: "Modifier la facture" },
+  { path: "/invoices/[id]", title: "Facture" },
+  { path: "/tiers/new", title: "Nouveau tiers" },
+  { path: "/expense-reports/new", title: "Nouvelle note de frais" },
+  { path: "/expense-reports/settings", title: "Bénéficiaires et catégories" },
+  { path: "/expense-reports/[id]/edit", title: "Modifier la note de frais" },
+  { path: "/expense-reports/[id]", title: "Note de frais" },
+  { path: "/tiers/[id]", title: "Tiers" },
+  { path: "/management-fees/new", title: "Nouvelle convention" },
+  { path: "/management-fees/[id]/edit", title: "Modifier la convention" },
+  { path: "/management-fees/[id]", title: "Convention de frais de gestion" },
 ]
 
 function matchesPattern(pattern: string, relativePath: string): boolean {

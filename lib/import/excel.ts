@@ -10,6 +10,8 @@ import type { PCGWarning } from '@/lib/accounting/services'
 import { handleError, ValidationError } from '@/lib/accounting/errors'
 import { fromCents } from '@/lib/utils/money'
 import { importAmountCents } from './amount'
+import { loadExistingEntries } from './duplicate-entries'
+import { journalAccounts } from './journal-accounts'
 
 interface ExcelImportOptions {
   companyId: string
@@ -149,9 +151,10 @@ export async function importExcel(
       entryKeysSample: Array.from(entriesMap.keys()).slice(0, 5),
     })
 
-    // Create necessary journals and accounts
+    // Create the journals of the file
     const journalsMap = new Map<string, string>()
-    const accountsMap = new Map<string, string>()
+    // Accounts are taken in the fiscal year of each entry (journal-accounts.ts)
+    const accounts = journalAccounts(companyId, result)
 
     for (const row of rows) {
       const journalCode = String(row[defaultMapping.journalColumn] || 'OD')
@@ -163,62 +166,26 @@ export async function importExcel(
 
       // Create the journal
       if (!journalsMap.has(journalCode)) {
-        const journal = await prisma.journal.upsert({
-          where: {
-            companyId_code: {
-              companyId,
-              code: journalCode,
-            },
-          },
-          update: {},
-          create: {
-            companyId,
-            code: journalCode,
-            label: journalCode,
-          },
+        // An existing journal of the company is reused and not counted as created
+        const existingJournal = await prisma.journal.findUnique({
+          where: { companyId_code: { companyId, code: journalCode } },
+          select: { id: true },
         })
+        const journal =
+          existingJournal ??
+          (await prisma.journal.create({ data: { companyId, code: journalCode, label: journalCode }, select: { id: true } }))
+        if (!existingJournal) result.journalsCreated++
         journalsMap.set(journalCode, journal.id)
-        result.journalsCreated++
-      }
-
-      // Create the account
-      if (!accountsMap.has(accountCode)) {
-        // Get active fiscal year
-        const { getOrCreateActiveFiscalYear } = await import('@/lib/accounting/fiscal-year-utils')
-        const activeFiscalYear = await getOrCreateActiveFiscalYear(companyId)
-
-        logger.debug('[import/excel] Active fiscal year for accounts', {
-          companyId,
-          activeFiscalYearId: activeFiscalYear.id,
-          activeFiscalYearYear: activeFiscalYear.year,
-          accountCode,
-        })
-
-        let account = await prisma.account.findFirst({
-          where: {
-            companyId,
-            code: accountCode,
-            fiscalYearId: activeFiscalYear.id,
-          },
-        })
-        
-        if (!account) {
-          account = await prisma.account.create({
-            data: {
-              companyId,
-              code: accountCode,
-              label: accountCode,
-              fiscalYearId: activeFiscalYear.id,
-            },
-          })
-          result.accountsCreated++
-        }
-        
-        accountsMap.set(accountCode, account.id)
       }
     }
 
     // Create entries
+    // Entries already imported (same journal, day, texts and lines): skipped
+    const existingEntries = await loadExistingEntries(
+      companyId,
+      [...new Set(journalsMap.values())],
+      [...entriesMap.values()].map((lines) => new Date(lines[0][defaultMapping.dateColumn] as string | number | Date)),
+    )
     for (const [key, lines] of entriesMap.entries()) {
       try {
         const firstLine = lines[0]
@@ -242,19 +209,6 @@ export async function importExcel(
           linesCount: lines.length,
         })
 
-        // Check if entry already exists
-        // La contrainte d'unicité est maintenant globale (companyId, entryNumber)
-        const existing = await prisma.accountingEntry.findFirst({
-          where: {
-            companyId,
-            entryNumber,
-          },
-        })
-
-        if (existing) {
-          logger.debug('[import/excel] Entry already exists, skip', { entryNumber, companyId })
-          continue
-        }
 
         // Excel lines to EntryLine, amounts read exactly (French notation accepted)
         const amounts = lines.map((l) => ({
@@ -265,22 +219,23 @@ export async function importExcel(
           result.errors.push(`Écriture ${entryNumber}: montant invalide (exemple : 1 234,56)`)
           continue
         }
+        const fiscalYearId = await accounts.fiscalYearId(entryDate)
+        const lineAccountIds: string[] = []
+        for (const l of lines) {
+          lineAccountIds.push(await accounts.accountId(fiscalYearId, String(l[defaultMapping.accountColumn] || '')))
+        }
         const entryLines: EntryLine[] = lines.map((l, i) => ({
-          accountId: accountsMap.get(String(l[defaultMapping.accountColumn]))!,
+          accountId: lineAccountIds[i],
           debit: fromCents(amounts[i].debit ?? 0),
           credit: fromCents(amounts[i].credit ?? 0),
           description: String(l[defaultMapping.descriptionColumn] || ''),
         }))
 
         const accountIds = entryLines.map((l) => l.accountId)
-        const missingAccount = entryLines.some((l) => !l.accountId)
-        if (missingAccount) {
-          logger.debug('[import/excel] Missing accountId in entryLines', {
+        if (entryLines.some((l) => !l.accountId)) {
+          logger.debug('[import/excel] Missing account code in entry lines', {
             entryNumber,
-            entryLinesRaw: lines.map((l) => ({
-              accountColumn: l[defaultMapping.accountColumn],
-              resolvedId: accountsMap.get(String(l[defaultMapping.accountColumn])),
-            })),
+            accountColumns: lines.map((l) => l[defaultMapping.accountColumn]),
           })
         }
 
@@ -292,6 +247,18 @@ export async function importExcel(
           )
           continue
         }
+
+        const description = String(firstLine[defaultMapping.descriptionColumn] || '')
+        const reference = String(firstLine[defaultMapping.referenceColumn] || '')
+        // The file's number is not compared: numbers are assigned at validation (PCG art. 1031-3)
+        const duplicate = existingEntries.take({
+          journalId,
+          date: entryDate,
+          description,
+          reference,
+          lines: entryLines.map((l, i) => ({ accountId: l.accountId, debitCents: amounts[i].debit ?? 0, creditCents: amounts[i].credit ?? 0 })),
+        })
+        if (duplicate) continue
 
         // Create entry with business service and capture PCG warnings
         try {
@@ -306,8 +273,8 @@ export async function importExcel(
             journalId,
             entryNumber,
             date: entryDate,
-            description: String(firstLine[defaultMapping.descriptionColumn] || ''),
-            reference: String(firstLine[defaultMapping.referenceColumn] || ''),
+            description,
+            reference,
             status: 'validated',
             lines: entryLines,
           })

@@ -25,7 +25,8 @@ export function LoginForm({ extra }: { extra?: React.ReactNode }) {
   useEffect(() => {
     const errorParam = searchParams.get('error')
     if (errorParam) {
-      setError(decodeURIComponent(errorParam))
+      // Already decoded by URLSearchParams: decoding again throws on a literal "%".
+      setError(errorParam)
       router.replace('/login')
     }
   }, [searchParams, router])
@@ -54,7 +55,13 @@ export function LoginForm({ extra }: { extra?: React.ReactNode }) {
     })
 
     if (signInError) {
-      setError(signInError.message ?? 'Échec de la connexion')
+      // Instances that require a confirmed address (REQUIRE_EMAIL_VERIFICATION,
+      // lib/instance/policy.ts): Better Auth has just sent the link again.
+      setError(
+        signInError.code === 'EMAIL_NOT_VERIFIED'
+          ? 'Confirmez d’abord votre adresse email\u00a0: nous venons de vous renvoyer le lien de confirmation.'
+          : (signInError.message ?? 'Échec de la connexion'),
+      )
       setLoading(false)
       return
     }

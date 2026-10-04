@@ -16,6 +16,9 @@ import { registerEntryTools } from './entries'
 import { registerBankingTools } from './banking'
 import { registerLedgerTools } from './ledger'
 import { registerYearEndTools } from './year-end'
+import { registerLetteringTools } from './lettering'
+import { registerInvoiceTools } from './invoices'
+import { registerExpenseReportTools } from './expense-reports'
 
 export function registerFullControlTools(server: McpServer, access: McpAccess, guard: CompanyGuard): void {
   if (!access.canAdmin) return
@@ -24,4 +27,7 @@ export function registerFullControlTools(server: McpServer, access: McpAccess, g
   registerBankingTools(register)
   registerLedgerTools(register)
   registerYearEndTools(register)
+  registerLetteringTools(register)
+  registerInvoiceTools(register)
+  registerExpenseReportTools(register)
 }

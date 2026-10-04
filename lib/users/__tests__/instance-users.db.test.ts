@@ -29,10 +29,11 @@ const state = await vi.hoisted(async () => {
 })
 
 vi.mock('@/lib/session', () => ({ getCurrentUser: async () => state.session.getStore() ?? null }))
-vi.mock('@/lib/instance/policy', () => ({
+// The real policy (every hook and constant of the extension point), with the two refusals replaced.
+vi.mock('@/lib/instance/policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/instance/policy')>()),
   isActionAllowed: async (action: string) => !state.refused.has(action),
   actionRefusalMessage: () => 'Refusé par la politique de cette instance.',
-  SELF_AUTHENTICATED_API_ROUTES: {},
 }))
 
 import { prepareTestDatabase, testDatabaseAvailable } from '@/lib/__tests__/helpers/test-db'
@@ -135,7 +136,11 @@ describe.skipIf(!available)('instance user management', () => {
       call(admin, 'PATCH', other.user.id, { action: 'set-role', role: 'user' }),
       call(other, 'PATCH', admin.user.id, { action: 'set-role', role: 'user' }),
     ])
-    expect([first.status, second.status].sort()).toEqual([200, 403])
+    // The loser is refused: 403 when Kledg's own check sees the demotion
+    // first, 401 when Better Auth's setRole does (timing dependent).
+    const statuses = [first.status, second.status].sort()
+    expect(statuses[0]).toBe(200)
+    expect([401, 403]).toContain(statuses[1])
     expect(await prisma.user.count({ where: { role: 'admin' } })).toBe(1)
   })
 

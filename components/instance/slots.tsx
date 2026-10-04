@@ -15,7 +15,7 @@
 
 import type { InstanceActor } from '@/lib/instance/types'
 import type { UserMenuItem } from '@/components/layout/user-menu'
-import type { InstanceSettingsLinks } from '@/components/layout/settings-nav-config'
+import type { InstanceSettingsLinks, InstanceSettingsPage } from '@/components/layout/settings-nav-config'
 import { isActionAllowed } from '@/lib/instance/policy'
 import { isDemoMode } from '@/lib/demo/mode'
 import { enterDemo, resetDemo, switchDemoPersona } from '@/lib/demo/sandbox/actions'
@@ -64,4 +64,15 @@ export async function filterUserMenu(items: UserMenuItem[], user: InstanceActor)
  */
 export async function instanceSettingsLinks(user: InstanceActor): Promise<InstanceSettingsLinks | null> {
   return isDemoMode() ? demoInstanceLinks(user) : null
+}
+
+/**
+ * The instance's own settings pages for `user` (a billing page, an operator
+ * console), added to the settings sidebar and breadcrumb: at the end of the
+ * "Compte" group, or of the "Instance" group (instance administrators).
+ * Kledg: none.
+ */
+export async function instanceSettingsPages(user: InstanceActor): Promise<InstanceSettingsPage[]> {
+  void user
+  return []
 }

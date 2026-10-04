@@ -21,6 +21,8 @@ const state = await vi.hoisted(async () => {
   useTestDatabase('matrix')
   process.env.BETTER_AUTH_SECRET ??= 'kledg-test-secret-0123456789abcdef0123456789'
   process.env.BETTER_AUTH_URL ??= 'http://localhost:3000'
+  // Routes that reach Qonto (invoice import) must never leave the machine: a closed local port answers at once
+  process.env.QONTO_API_URL = 'http://127.0.0.1:9/v2'
   return { user: null as null | { id: string; email: string; name: string | null; role: string | null } }
 })
 
@@ -97,6 +99,50 @@ async function seedCompany(prefix: 'a' | 'b', name: string, slug: string, siren:
       status: 'validated',
     },
   })
+  // A validated invoice and its payment on the customer account, lettered AA (unlettering succeeds, lettering again is a 409)
+  const receivable = await prisma.account.create({ data: { companyId: company.id, fiscalYearId: fy.id, code: '411000', label: 'Clients' } })
+  const invoice = await prisma.accountingEntry.create({
+    data: { companyId: company.id, fiscalYearId: fy.id, journalId: journal.id, entryNumber: '3', date: new Date('2026-03-03T00:00:00Z'), description: 'Facture', status: 'draft' },
+  })
+  const payment = await prisma.accountingEntry.create({
+    data: { companyId: company.id, fiscalYearId: fy.id, journalId: journal.id, entryNumber: '4', date: new Date('2026-03-04T00:00:00Z'), description: 'Règlement', status: 'draft' },
+  })
+  const invoiceLine = await prisma.entryLine.create({
+    data: { accountingEntryId: invoice.id, accountId: receivable.id, accountFiscalYearId: fy.id, accountingEntryNumber: '3', debit: 120, credit: 0, auxiliaryAccountNumber: 'C001', letteringCode: 'AA', letteringDate: new Date('2026-03-04T00:00:00Z') },
+  })
+  await prisma.entryLine.create({ data: { accountingEntryId: invoice.id, accountId: sales.id, accountFiscalYearId: fy.id, accountingEntryNumber: '3', debit: 0, credit: 120 } })
+  const paymentLine = await prisma.entryLine.create({
+    data: { accountingEntryId: payment.id, accountId: receivable.id, accountFiscalYearId: fy.id, accountingEntryNumber: '4', debit: 0, credit: 120, auxiliaryAccountNumber: 'C001', letteringCode: 'AA', letteringDate: new Date('2026-03-04T00:00:00Z') },
+  })
+  await prisma.entryLine.create({ data: { accountingEntryId: payment.id, accountId: bank.id, accountFiscalYearId: fy.id, accountingEntryNumber: '4', debit: 120, credit: 0 } })
+  await prisma.accountingEntry.updateMany({ where: { id: { in: [invoice.id, payment.id] } }, data: { status: 'validated' } })
+  // Tiers and invoices: the customer of the lettered invoice above (posted, paid), a draft invoice and a tiers without invoices
+  const customer = await prisma.tiers.create({ data: { companyId: company.id, kind: 'CUSTOMER', name: `Client ${prefix}`, auxiliaryAccountNumber: 'C001' } })
+  const freeTiers = await prisma.tiers.create({ data: { companyId: company.id, kind: 'SUPPLIER', name: `Fournisseur ${prefix}`, auxiliaryAccountNumber: 'F001' } })
+  const invoiceLines = (vatRateBp: number) => ({
+    lines: { create: [{ position: 1, label: 'Vente', quantity: 1, unitPrice: 100, vatRateBp, totalExclTax: 100, accountCode: '706000' }] },
+    vatBreakdown: { create: [{ vatRateBp, baseAmount: 100, vatAmount: vatRateBp ? 20 : 0 }] },
+  })
+  const postedInvoice = await prisma.invoice.create({
+    data: {
+      companyId: company.id, direction: 'SALE', tiersId: customer.id, number: 'V-1', issueDate: new Date('2026-03-03T00:00:00Z'), dueDate: new Date('2026-04-02T00:00:00Z'),
+      totalExclTax: 100, totalVat: 20, totalInclTax: 120, entryId: invoice.id, ...invoiceLines(2000),
+    },
+  })
+  const draftInvoice = await prisma.invoice.create({
+    data: {
+      companyId: company.id, direction: 'SALE', tiersId: customer.id, number: 'V-2', issueDate: new Date('2026-03-05T00:00:00Z'), dueDate: new Date('2026-04-04T00:00:00Z'),
+      totalExclTax: 100, totalVat: 0, totalInclTax: 100, ...invoiceLines(0),
+    },
+    include: { lines: true },
+  })
+  Object.assign(ids, {
+    [`${prefix}Tiers`]: customer.id,
+    [`${prefix}FreeTiers`]: freeTiers.id,
+    [`${prefix}PostedInvoice`]: postedInvoice.id,
+    [`${prefix}DraftInvoice`]: draftInvoice.id,
+    [`${prefix}DraftInvoiceLine`]: draftInvoice.lines[0].id,
+  })
   const connection = await prisma.bankConnection.create({
     data: { companyId: company.id, login: `login-${prefix}`, secretKeyEncrypted: 'encrypted-secret' },
   })
@@ -113,9 +159,69 @@ async function seedCompany(prefix: 'a' | 'b', name: string, slug: string, siren:
       label: 'Virement client',
     },
   })
+  // A monthly subscription (three debits to the same counterparty), detected by /api/subscriptions
+  const subscriptionPayments = []
+  for (const day of ['2026-01-10', '2026-02-10', '2026-03-10']) {
+    subscriptionPayments.push(
+      await prisma.bankTransaction.create({
+        data: { bankAccountId: bankAccount.id, externalTransactionId: `sub-${prefix}-${day}`, amount: 29.9, date: new Date(`${day}T00:00:00Z`), side: 'debit', label: 'CB LOGICIEL', counterpartyName: 'Logiciel' },
+      }),
+    )
+  }
+  ids[`${prefix}Subscription`] = subscriptionPayments[0].id
   const rule = await prisma.transactionRule.create({
     data: { companyId: company.id, name: 'Règle', entryLines: { create: [{ accountCode: '706000', lineType: 'auto', amountType: 'full', order: 0 }] } },
   })
+  // Expense reports: the viewer's (company A) or the member's (company B) claimant, a report in each state, a free claimant and a category rule
+  const claimant = await prisma.expenseClaimant.create({
+    data: { companyId: company.id, kind: 'EMPLOYEE', name: `Salarié ${prefix}`, userId: prefix === 'a' ? 'u-viewer' : 'u-member-b', auxiliaryAccountNumber: 'S00001' },
+  })
+  const freeClaimant = await prisma.expenseClaimant.create({ data: { companyId: company.id, kind: 'ASSOCIE', name: `Associé ${prefix}`, auxiliaryAccountNumber: 'A00001' } })
+  const expenseReport = (number: string, status: 'DRAFT' | 'SUBMITTED' | 'VALIDATED') =>
+    prisma.expenseReport.create({
+      data: {
+        companyId: company.id,
+        claimantId: claimant.id,
+        number,
+        status,
+        periodStart: new Date('2026-03-01T00:00:00Z'),
+        periodEnd: new Date('2026-03-31T00:00:00Z'),
+        totalInclTax: 120,
+        recoverableVat: 20,
+        totalExpense: 100,
+        lines: { create: [{ position: 1, date: new Date('2026-03-10T00:00:00Z'), label: 'Fournitures', category: 'SUPPLIES', accountCode: '706000', amountInclTax: 120, vatRateBp: 2000, vatAmount: 20, recoverableVat: 20, receiptKind: 'INVOICE' }] },
+      },
+    })
+  const draftReport = await expenseReport('NDF-0001', 'DRAFT')
+  const submittedReport = await expenseReport('NDF-0002', 'SUBMITTED')
+  const validatedReport = await expenseReport('NDF-0003', 'VALIDATED')
+  const expenseRule = await prisma.expenseCategoryRule.create({ data: { companyId: company.id, keyword: 'sncf', category: 'TRANSPORT' } })
+  Object.assign(ids, {
+    [`${prefix}DraftReport`]: draftReport.id,
+    [`${prefix}SubmittedReport`]: submittedReport.id,
+    [`${prefix}ValidatedReport`]: validatedReport.id,
+    [`${prefix}FreeClaimant`]: freeClaimant.id,
+    [`${prefix}ExpenseRule`]: expenseRule.id,
+  })
+  // Budget of the fiscal year, with a line
+  const budget = await prisma.budget.create({
+    data: {
+      companyId: company.id,
+      fiscalYearId: fy.id,
+      lines: { create: [{ accountPrefix: '706', label: 'Prestations de services', amounts: { create: [{ month: '2026-01', amount: 1000 }] } }, { accountPrefix: '613', label: 'Locations' }] },
+    },
+    include: { lines: true },
+  })
+  Object.assign(ids, {
+    [`${prefix}Budget`]: budget.id,
+    [`${prefix}BudgetLine`]: budget.lines.find((l) => l.accountPrefix === '706')!.id,
+    [`${prefix}ChargesLine`]: budget.lines.find((l) => l.accountPrefix === '613')!.id,
+  })
+  // Management fees: a convention without subsidiary, so no other company is involved in the role checks
+  const feeConvention = await prisma.managementFeeConvention.create({
+    data: { companyId: company.id, label: 'Convention', costAccountPrefixes: ['6'], excludedAccountPrefixes: ['695'], startDate: new Date('2026-01-01T00:00:00Z') },
+  })
+  ids[`${prefix}FeeConvention`] = feeConvention.id
   const fixedAsset = await prisma.fixedAsset.create({
     data: {
       companyId: company.id,
@@ -173,6 +279,9 @@ async function seedCompany(prefix: 'a' | 'b', name: string, slug: string, siren:
     [`${prefix}Integration`]: integration.id,
     [`${prefix}FixedAsset`]: fixedAsset.id,
     [`${prefix}Depreciation`]: depreciation.id,
+    [`${prefix}Receivable`]: receivable.id,
+    [`${prefix}InvoiceLine`]: invoiceLine.id,
+    [`${prefix}PaymentLine`]: paymentLine.id,
   })
 }
 
@@ -291,6 +400,55 @@ const ROUTE_MODULES = {
   balanceSheetLayoutReset: () => import('@/app/api/companies/[id]/balance-sheet/config/default/route'),
   incomeStatement: () => import('@/app/api/companies/[id]/income-statement/route'),
   incomeStatementLine: () => import('@/app/api/companies/[id]/income-statement/config/line/route'),
+  lettering: () => import('@/app/api/lettering/route'),
+  letteringAccounts: () => import('@/app/api/lettering/accounts/route'),
+  letteringSuggestions: () => import('@/app/api/lettering/suggestions/route'),
+  letteringUnletter: () => import('@/app/api/lettering/unletter/route'),
+  letteringAuto: () => import('@/app/api/lettering/auto/route'),
+  agedBalance: () => import('@/app/api/reports/aged-balance/route'),
+  agedBalanceExcel: () => import('@/app/api/reports/aged-balance/export-excel/route'),
+  auxiliaryBalance: () => import('@/app/api/reports/auxiliary-balance/route'),
+  auxiliaryBalanceExcel: () => import('@/app/api/reports/auxiliary-balance/export-excel/route'),
+  missingReceipts: () => import('@/app/api/banking/missing-receipts/route'),
+  paymentTerms: () => import('@/app/api/companies/[id]/payment-terms/route'),
+  tiers: () => import('@/app/api/tiers/route'),
+  tiersOne: () => import('@/app/api/tiers/[id]/route'),
+  tiersAttach: () => import('@/app/api/tiers/attach-auxiliary/route'),
+  invoices: () => import('@/app/api/invoices/route'),
+  invoice: () => import('@/app/api/invoices/[id]/route'),
+  invoiceLines: () => import('@/app/api/invoices/[id]/lines/route'),
+  invoicePost: () => import('@/app/api/invoices/[id]/post/route'),
+  invoicePayments: () => import('@/app/api/invoices/[id]/payments/route'),
+  invoicePaymentCandidates: () => import('@/app/api/invoices/[id]/payments/candidates/route'),
+  invoicePayment: () => import('@/app/api/invoices/[id]/payments/[paymentId]/route'),
+  invoiceSettle: () => import('@/app/api/invoices/[id]/settle/route'),
+  invoiceAttachment: () => import('@/app/api/invoices/[id]/attachment/route'),
+  invoicesImportQonto: () => import('@/app/api/invoices/import-qonto/route'),
+  vatSettings: () => import('@/app/api/companies/[id]/vat-settings/route'),
+  expenseReports: () => import('@/app/api/expense-reports/route'),
+  expenseReport: () => import('@/app/api/expense-reports/[id]/route'),
+  expenseWorkflow: () => import('@/app/api/expense-reports/[id]/workflow/route'),
+  expensePost: () => import('@/app/api/expense-reports/[id]/post/route'),
+  expenseReimbursement: () => import('@/app/api/expense-reports/[id]/reimbursement/route'),
+  expenseReceipts: () => import('@/app/api/expense-reports/receipts/route'),
+  expenseClaimants: () => import('@/app/api/expense-claimants/route'),
+  expenseClaimant: () => import('@/app/api/expense-claimants/[id]/route'),
+  expenseClaimantOptions: () => import('@/app/api/expense-claimants/options/route'),
+  expenseRules: () => import('@/app/api/expense-category-rules/route'),
+  expenseRule: () => import('@/app/api/expense-category-rules/[id]/route'),
+  budgets: () => import('@/app/api/budgets/route'),
+  budget: () => import('@/app/api/budgets/[id]/route'),
+  budgetLines: () => import('@/app/api/budgets/[id]/lines/route'),
+  budgetReport: () => import('@/app/api/budgets/[id]/report/route'),
+  budgetLine: () => import('@/app/api/budget-lines/[id]/route'),
+  feeConventions: () => import('@/app/api/management-fees/conventions/route'),
+  subscriptions: () => import('@/app/api/subscriptions/route'),
+  subscriptionDecision: () => import('@/app/api/subscriptions/decision/route'),
+  subscriptionBudgetItem: () => import('@/app/api/subscriptions/budget-item/route'),
+  feeConvention: () => import('@/app/api/management-fees/conventions/[id]/route'),
+  feePreview: () => import('@/app/api/management-fees/conventions/[id]/preview/route'),
+  feeInvoices: () => import('@/app/api/management-fees/conventions/[id]/invoices/route'),
+  feeSubsidiaries: () => import('@/app/api/management-fees/subsidiaries/route'),
 }
 
 interface Call {
@@ -407,7 +565,65 @@ const WRITES: Call[] = [
   { label: 'export balance sheet', route: 'balanceSheetExcel', method: 'GET', path: () => `/api/companies/${A()}/balance-sheet/export-excel?fiscalYearId=${ids.aFy}`, params: p({ id: A }) },
   { label: 'reset balance sheet layout', route: 'balanceSheetLayoutReset', method: 'POST', path: () => `/api/companies/${A()}/balance-sheet/config/default`, params: p({ id: A }), body: () => ({ variant: 'simplified' }) },
   { label: 'create income statement line', route: 'incomeStatementLine', method: 'POST', path: () => `/api/companies/${A()}/income-statement/config/line`, params: p({ id: A }), body: () => ({ lineLabel: 'Divers', accountCodes: ['758'] }) },
+  { label: 'letter lines', route: 'lettering', method: 'POST', path: () => '/api/lettering', body: () => ({ companyId: A(), accountId: ids.aReceivable, lineIds: [ids.aInvoiceLine, ids.aPaymentLine] }) },
+  { label: 'unletter lines', route: 'letteringUnletter', method: 'POST', path: () => '/api/lettering/unletter', body: () => ({ companyId: A(), accountId: ids.aReceivable, code: 'AA' }) },
+  { label: 'automatic lettering', route: 'letteringAuto', method: 'POST', path: () => '/api/lettering/auto', body: () => ({ companyId: A(), accountId: ids.aReceivable }) },
+  { label: 'export aged balance', route: 'agedBalanceExcel', method: 'GET', path: () => `/api/reports/aged-balance/export-excel?companyId=${A()}&fiscalYearId=${ids.aFy}` },
+  { label: 'export auxiliary balance', route: 'auxiliaryBalanceExcel', method: 'GET', path: () => `/api/reports/auxiliary-balance/export-excel?companyId=${A()}&fiscalYearId=${ids.aFy}` },
+  { label: 'update payment terms', route: 'paymentTerms', method: 'PUT', path: () => `/api/companies/${A()}/payment-terms`, params: p({ id: A }), body: () => ({ days: 45, endOfMonth: true }) },
+  { label: 'create tiers', route: 'tiers', method: 'POST', path: () => '/api/tiers', body: () => ({ companyId: A(), kind: 'CUSTOMER', name: 'Nouveau client' }) },
+  { label: 'update tiers', route: 'tiersOne', method: 'PATCH', path: () => `/api/tiers/${ids.aTiers}`, params: p({ id: () => ids.aTiers }), body: () => ({ name: 'Client renommé' }) },
+  { label: 'delete tiers', route: 'tiersOne', method: 'DELETE', path: () => `/api/tiers/${ids.aFreeTiers}`, params: p({ id: () => ids.aFreeTiers }) },
+  { label: 'create tiers from auxiliary accounts', route: 'tiersAttach', method: 'POST', path: () => '/api/tiers/attach-auxiliary', body: () => ({ companyId: A() }) },
+  {
+    label: 'create invoice',
+    route: 'invoices',
+    method: 'POST',
+    path: () => '/api/invoices',
+    body: () => ({ companyId: A(), direction: 'SALE', tiersId: ids.aTiers, number: 'V-9', issueDate: '2026-03-10', lines: [{ label: 'A', quantity: '1', unitPriceCents: 1000, vatRateBp: 0 }] }),
+  },
+  {
+    label: 'update invoice',
+    route: 'invoice',
+    method: 'PATCH',
+    path: () => `/api/invoices/${ids.aDraftInvoice}`,
+    params: p({ id: () => ids.aDraftInvoice }),
+    body: () => ({ tiersId: ids.aTiers, number: 'V-2', issueDate: '2026-03-05', lines: [{ label: 'B', quantity: '2', unitPriceCents: 1000, vatRateBp: 0 }] }),
+  },
+  { label: 'update invoice line accounts', route: 'invoiceLines', method: 'PATCH', path: () => `/api/invoices/${ids.aDraftInvoice}/lines`, params: p({ id: () => ids.aDraftInvoice }), body: () => ({ lines: [{ id: ids.aDraftInvoiceLine, accountCode: '706000' }] }) },
+  { label: 'delete invoice', route: 'invoice', method: 'DELETE', path: () => `/api/invoices/${ids.aDraftInvoice}`, params: p({ id: () => ids.aDraftInvoice }) },
+  { label: 'post invoice', route: 'invoicePost', method: 'POST', path: () => `/api/invoices/${ids.aDraftInvoice}/post`, params: p({ id: () => ids.aDraftInvoice }) },
+  { label: 'unpost invoice', route: 'invoicePost', method: 'DELETE', path: () => `/api/invoices/${ids.aPostedInvoice}/post`, params: p({ id: () => ids.aPostedInvoice }) },
+  { label: 'record invoice payment', route: 'invoicePayments', method: 'POST', path: () => `/api/invoices/${ids.aPostedInvoice}/payments`, params: p({ id: () => ids.aPostedInvoice }), body: () => ({ entryLineId: ids.aPaymentLine }) },
+  { label: 'remove invoice payment', route: 'invoicePayment', method: 'DELETE', path: () => `/api/invoices/${ids.aPostedInvoice}/payments/none`, params: p({ id: () => ids.aPostedInvoice, paymentId: () => 'none' }) },
+  { label: 'settle invoice', route: 'invoiceSettle', method: 'POST', path: () => `/api/invoices/${ids.aPostedInvoice}/settle`, params: p({ id: () => ids.aPostedInvoice }) },
+  { label: 'import invoices from Qonto', route: 'invoicesImportQonto', method: 'POST', path: () => '/api/invoices/import-qonto', body: () => ({ companyId: A() }) },
+  { label: 'update VAT settings', route: 'vatSettings', method: 'PUT', path: () => `/api/companies/${A()}/vat-settings`, params: p({ id: A }), body: () => ({ servicesVatOnDebits: true }) },
   { label: 'book opening balances', route: 'openingBalances', method: 'POST', path: () => `/api/companies/${A()}/opening-balances`, params: p({ id: A }), body: () => ({ lines: [{ accountCode: '512000', debitCents: 10_000, creditCents: 0 }, { accountCode: '471000', debitCents: 0, creditCents: 10_000 }] }) },
+  { label: 'validate expense report', route: 'expenseWorkflow', method: 'POST', path: () => `/api/expense-reports/${ids.aSubmittedReport}/workflow`, params: p({ id: () => ids.aSubmittedReport }), body: () => ({ action: 'validate' }) },
+  { label: 'return expense report', route: 'expenseWorkflow', method: 'POST', path: () => `/api/expense-reports/${ids.aSubmittedReport}/workflow`, params: p({ id: () => ids.aSubmittedReport }), body: () => ({ action: 'return', note: 'Joindre la facture' }) },
+  { label: 'post expense report', route: 'expensePost', method: 'POST', path: () => `/api/expense-reports/${ids.aValidatedReport}/post`, params: p({ id: () => ids.aValidatedReport }) },
+  { label: 'unpost expense report', route: 'expensePost', method: 'DELETE', path: () => `/api/expense-reports/${ids.aValidatedReport}/post`, params: p({ id: () => ids.aValidatedReport }) },
+  { label: 'expense reimbursement candidates', route: 'expenseReimbursement', method: 'GET', path: () => `/api/expense-reports/${ids.aValidatedReport}/reimbursement`, params: p({ id: () => ids.aValidatedReport }) },
+  { label: 'reimburse expense report', route: 'expenseReimbursement', method: 'POST', path: () => `/api/expense-reports/${ids.aValidatedReport}/reimbursement`, params: p({ id: () => ids.aValidatedReport }), body: () => ({ entryLineIds: ['none'] }) },
+  { label: 'create expense claimant', route: 'expenseClaimants', method: 'POST', path: () => '/api/expense-claimants', body: () => ({ companyId: A(), kind: 'DIRIGEANT', name: 'Dirigeant' }) },
+  { label: 'update expense claimant', route: 'expenseClaimant', method: 'PATCH', path: () => `/api/expense-claimants/${ids.aFreeClaimant}`, params: p({ id: () => ids.aFreeClaimant }), body: () => ({ accountCode: '4551' }) },
+  { label: 'delete expense claimant', route: 'expenseClaimant', method: 'DELETE', path: () => `/api/expense-claimants/${ids.aFreeClaimant}`, params: p({ id: () => ids.aFreeClaimant }) },
+  { label: 'expense claimant options', route: 'expenseClaimantOptions', method: 'GET', path: () => `/api/expense-claimants/options?companyId=${A()}` },
+  { label: 'create expense category rule', route: 'expenseRules', method: 'POST', path: () => '/api/expense-category-rules', body: () => ({ companyId: A(), keyword: 'uber', category: 'TRANSPORT' }) },
+  { label: 'update expense category rule', route: 'expenseRule', method: 'PATCH', path: () => `/api/expense-category-rules/${ids.aExpenseRule}`, params: p({ id: () => ids.aExpenseRule }), body: () => ({ priority: 2 }) },
+  { label: 'delete expense category rule', route: 'expenseRule', method: 'DELETE', path: () => `/api/expense-category-rules/${ids.aExpenseRule}`, params: p({ id: () => ids.aExpenseRule }) },
+  { label: 'create budget', route: 'budgets', method: 'POST', path: () => '/api/budgets', body: () => ({ companyId: A(), fiscalYearId: ids.aFy }) },
+  { label: 'delete budget', route: 'budget', method: 'DELETE', path: () => `/api/budgets/${ids.aBudget}`, params: p({ id: () => ids.aBudget }) },
+  { label: 'create budget line', route: 'budgetLines', method: 'POST', path: () => `/api/budgets/${ids.aBudget}/lines`, params: p({ id: () => ids.aBudget }), body: () => ({ accountPrefix: '6064' }) },
+  { label: 'update budget line', route: 'budgetLine', method: 'PATCH', path: () => `/api/budget-lines/${ids.aBudgetLine}`, params: p({ id: () => ids.aBudgetLine }), body: () => ({ amounts: [{ month: '2026-02', amountCents: 5_000 }] }) },
+  { label: 'delete budget line', route: 'budgetLine', method: 'DELETE', path: () => `/api/budget-lines/${ids.aBudgetLine}`, params: p({ id: () => ids.aBudgetLine }) },
+  { label: 'decide on a subscription', route: 'subscriptionDecision', method: 'PUT', path: () => '/api/subscriptions/decision', body: () => ({ companyId: A(), subscriptionId: ids.aSubscription, status: 'ignored' }) },
+  { label: 'add a subscription to the budget', route: 'subscriptionBudgetItem', method: 'POST', path: () => '/api/subscriptions/budget-item', body: () => ({ companyId: A(), subscriptionId: ids.aSubscription, budgetLineId: ids.aChargesLine }) },
+  { label: 'create management fee convention', route: 'feeConventions', method: 'POST', path: () => '/api/management-fees/conventions', body: () => ({ companyId: A(), label: 'Convention', startDate: '2026-01-01', subsidiaries: [] }) },
+  { label: 'update management fee convention', route: 'feeConvention', method: 'PATCH', path: () => `/api/management-fees/conventions/${ids.aFeeConvention}`, params: p({ id: () => ids.aFeeConvention }), body: () => ({ label: 'Convention', startDate: '2026-01-01', subsidiaries: [] }) },
+  { label: 'delete management fee convention', route: 'feeConvention', method: 'DELETE', path: () => `/api/management-fees/conventions/${ids.aFeeConvention}`, params: p({ id: () => ids.aFeeConvention }) },
+  { label: 'invoice management fees', route: 'feeInvoices', method: 'POST', path: () => `/api/management-fees/conventions/${ids.aFeeConvention}/invoices`, params: p({ id: () => ids.aFeeConvention }), body: () => ({ periodStart: '2026-01-01', periodEnd: '2026-03-31' }) },
 ]
 
 /** Reads of company A (viewer: allowed, non-member: 404, anonymous: 401). */
@@ -459,10 +675,36 @@ const READS: Call[] = [
   { label: 'preview FEC fiscal years', route: 'importPreview', method: 'POST', path: () => '/api/import/preview-fiscal-years', body: () => ({ companyId: A(), content: `${FEC_HEADER}\n` }) },
   { label: 'list persons', route: 'persons', method: 'GET', path: () => `/api/companies/${A()}/persons`, params: p({ id: A }) },
   { label: 'list shareholders', route: 'shareholders', method: 'GET', path: () => `/api/companies/${A()}/shareholders`, params: p({ id: A }) },
+  { label: 'lettering lines', route: 'lettering', method: 'GET', path: () => `/api/lettering?companyId=${A()}&accountId=${ids.aReceivable}` },
+  { label: 'letterable accounts', route: 'letteringAccounts', method: 'GET', path: () => `/api/lettering/accounts?companyId=${A()}&fiscalYearId=${ids.aFy}` },
+  { label: 'lettering suggestions', route: 'letteringSuggestions', method: 'GET', path: () => `/api/lettering/suggestions?companyId=${A()}&accountId=${ids.aReceivable}` },
+  { label: 'aged balance', route: 'agedBalance', method: 'GET', path: () => `/api/reports/aged-balance?companyId=${A()}&fiscalYearId=${ids.aFy}&asOf=2026-06-30` },
+  { label: 'auxiliary balance', route: 'auxiliaryBalance', method: 'GET', path: () => `/api/reports/auxiliary-balance?companyId=${A()}&fiscalYearId=${ids.aFy}` },
+  { label: 'missing receipts', route: 'missingReceipts', method: 'GET', path: () => `/api/banking/missing-receipts?companyId=${A()}&fiscalYearId=${ids.aFy}&minAmount=10` },
+  { label: 'payment terms', route: 'paymentTerms', method: 'GET', path: () => `/api/companies/${A()}/payment-terms`, params: p({ id: A }) },
+  { label: 'list tiers', route: 'tiers', method: 'GET', path: () => `/api/tiers?companyId=${A()}` },
+  { label: 'read tiers', route: 'tiersOne', method: 'GET', path: () => `/api/tiers/${ids.aTiers}`, params: p({ id: () => ids.aTiers }) },
+  { label: 'list invoices', route: 'invoices', method: 'GET', path: () => `/api/invoices?companyId=${A()}&direction=SALE` },
+  { label: 'read invoice', route: 'invoice', method: 'GET', path: () => `/api/invoices/${ids.aPostedInvoice}`, params: p({ id: () => ids.aPostedInvoice }) },
+  { label: 'invoice payment candidates', route: 'invoicePaymentCandidates', method: 'GET', path: () => `/api/invoices/${ids.aPostedInvoice}/payments/candidates`, params: p({ id: () => ids.aPostedInvoice }) },
+  { label: 'VAT settings', route: 'vatSettings', method: 'GET', path: () => `/api/companies/${A()}/vat-settings`, params: p({ id: A }) },
   { label: 'tax regime history', route: 'taxRegimes', method: 'GET', path: () => `/api/companies/${A()}/tax-regimes?regimeType=vat`, params: p({ id: A }) },
   { label: 'deadlines of a fiscal year', route: 'deadlines', method: 'GET', path: () => `/api/deadlines?companyId=${A()}&fiscalYearId=${ids.aFy}` },
   { label: 'deadline settings', route: 'deadlineSettings', method: 'GET', path: () => `/api/companies/${A()}/deadline-settings`, params: p({ id: A }) },
   { label: 'dashboard deadlines widget', route: 'dashboardWidgets', method: 'GET', path: () => `/api/dashboard/widgets?companyId=${A()}&source=deadlines` },
+  { label: 'list expense reports', route: 'expenseReports', method: 'GET', path: () => `/api/expense-reports?companyId=${A()}` },
+  { label: 'read own expense report', route: 'expenseReport', method: 'GET', path: () => `/api/expense-reports/${ids.aDraftReport}`, params: p({ id: () => ids.aDraftReport }) },
+  { label: 'list expense claimants', route: 'expenseClaimants', method: 'GET', path: () => `/api/expense-claimants?companyId=${A()}` },
+  { label: 'list expense category rules', route: 'expenseRules', method: 'GET', path: () => `/api/expense-category-rules?companyId=${A()}` },
+  { label: 'list expense receipts', route: 'expenseReceipts', method: 'GET', path: () => `/api/expense-reports/receipts?companyId=${A()}` },
+  { label: 'list budgets', route: 'budgets', method: 'GET', path: () => `/api/budgets?companyId=${A()}` },
+  { label: 'read budget', route: 'budget', method: 'GET', path: () => `/api/budgets/${ids.aBudget}`, params: p({ id: () => ids.aBudget }) },
+  { label: 'budget against the books', route: 'budgetReport', method: 'GET', path: () => `/api/budgets/${ids.aBudget}/report`, params: p({ id: () => ids.aBudget }) },
+  { label: 'list detected subscriptions', route: 'subscriptions', method: 'GET', path: () => `/api/subscriptions?companyId=${A()}` },
+  { label: 'list management fee conventions', route: 'feeConventions', method: 'GET', path: () => `/api/management-fees/conventions?companyId=${A()}` },
+  { label: 'read management fee convention', route: 'feeConvention', method: 'GET', path: () => `/api/management-fees/conventions/${ids.aFeeConvention}`, params: p({ id: () => ids.aFeeConvention }) },
+  { label: 'list management fee invoices', route: 'feeInvoices', method: 'GET', path: () => `/api/management-fees/conventions/${ids.aFeeConvention}/invoices`, params: p({ id: () => ids.aFeeConvention }) },
+  { label: 'list subsidiaries of a holding', route: 'feeSubsidiaries', method: 'GET', path: () => `/api/management-fees/subsidiaries?companyId=${A()}` },
 ]
 
 /** What the accountant must not do. */
@@ -496,7 +738,9 @@ const ACCOUNTANT_FORBIDDEN = new Set([
   'add tax regime',
   'update tax regime',
   'delete tax regime',
+  'update payment terms',
   'update deadline settings',
+  'update VAT settings',
 ])
 
 describe.skipIf(!available)('authorization matrix', () => {
@@ -610,6 +854,39 @@ describe.skipIf(!available)('authorization matrix', () => {
         params: p({ id: A }),
       })
       expect(response.status).toBe(404)
+    })
+
+    it("cannot record an invoice for company B's tiers, nor a payment line of company B", async () => {
+      await reseed()
+      const crossTiers = await call('accountant', {
+        label: 'cross tiers invoice',
+        route: 'invoices',
+        method: 'POST',
+        path: () => '/api/invoices',
+        body: () => ({ companyId: A(), direction: 'SALE', tiersId: ids.bTiers, number: 'X-1', issueDate: '2026-03-10', lines: [{ label: 'A', quantity: '1', unitPriceCents: 1000, vatRateBp: 0 }] }),
+      })
+      expect(crossTiers.status).toBe(404)
+      expect(await prisma.invoice.count({ where: { number: 'X-1' } })).toBe(0)
+      await prisma.entryLine.updateMany({ where: { id: ids.aInvoiceLine }, data: { letteringCode: null, letteringDate: null } })
+      const crossPayment = await call('accountant', {
+        label: 'cross payment',
+        route: 'invoicePayments',
+        method: 'POST',
+        path: () => `/api/invoices/${ids.aPostedInvoice}/payments`,
+        params: p({ id: () => ids.aPostedInvoice }),
+        body: () => ({ entryLineId: ids.bPaymentLine }),
+      })
+      expect(crossPayment.status).toBe(404)
+      expect(await prisma.invoicePayment.count()).toBe(0)
+    })
+
+    it('reads the document route of an invoice without a Qonto document as 404, never another company', async () => {
+      const own = await call('viewer', { label: 'attachment', route: 'invoiceAttachment', method: 'GET', path: () => `/api/invoices/${ids.aPostedInvoice}/attachment`, params: p({ id: () => ids.aPostedInvoice }) })
+      expect(own.status).toBe(404)
+      expect(((await own.json()) as { error: string }).error).toMatch(/Aucun document/)
+      const foreign = await call('memberB', { label: 'attachment', route: 'invoiceAttachment', method: 'GET', path: () => `/api/invoices/${ids.aPostedInvoice}/attachment`, params: p({ id: () => ids.aPostedInvoice }) })
+      expect(foreign.status).toBe(404)
+      expect(((await foreign.json()) as { error: string }).error).not.toMatch(/Aucun document/)
     })
 
     it("cannot create an entry with company B's journal or accounts", async () => {
@@ -729,6 +1006,45 @@ describe.skipIf(!available)('authorization matrix', () => {
       expect((await call('accountant', appearance('PUT', { palette: 'neon' }))).status).toBe(400)
       expect((await read('viewer')).appearance.palette).toBe('custom')
       expect(await prisma.userPreference.count({ where: { userId: 'u-accountant' } })).toBe(0)
+    })
+  })
+
+  describe('own expense reports (expenses:submit, every role)', () => {
+    beforeAll(reseed)
+    const lines = [{ date: '2026-03-10', label: 'Fournitures', category: 'SUPPLIES', amountInclTaxCents: 2_400, vatRateBp: 2000, receiptKind: 'INVOICE' }]
+    const OWN: Call[] = [
+      { label: 'create own expense report', route: 'expenseReports', method: 'POST', path: () => '/api/expense-reports', body: () => ({ companyId: A(), periodStart: '2026-03-01', periodEnd: '2026-03-31', lines }) },
+      { label: 'update own draft', route: 'expenseReport', method: 'PATCH', path: () => `/api/expense-reports/${ids.aDraftReport}`, params: p({ id: () => ids.aDraftReport }), body: () => ({ periodStart: '2026-03-01', periodEnd: '2026-03-31', lines }) },
+      { label: 'submit own draft', route: 'expenseWorkflow', method: 'POST', path: () => `/api/expense-reports/${ids.aDraftReport}/workflow`, params: p({ id: () => ids.aDraftReport }), body: () => ({ action: 'submit' }) },
+    ]
+
+    it.each(OWN.map((c) => [c.label, c] as const))('%s: anonymous 401, member of B 404', async (_label, c) => {
+      expect((await call('anonymous', c)).status).toBe(401)
+      expect((await call('memberB', c)).status).toBe(404)
+    })
+
+    it('a viewer records, edits and submits their own report, never validates it', async () => {
+      const [create, update, submit] = OWN
+      expect((await call('viewer', create)).status).toBe(201)
+      expect((await call('viewer', update)).status).toBe(200)
+      expect((await call('viewer', submit)).status).toBe(200)
+      const validate = await call('viewer', { ...submit, body: () => ({ action: 'validate' }) })
+      expect(validate.status).toBe(403)
+      expect((await prisma.expenseReport.findUniqueOrThrow({ where: { id: ids.aDraftReport } })).status).toBe('SUBMITTED')
+    })
+
+    it("a viewer never reaches another person's report; a validator does", async () => {
+      const own = await prisma.expenseClaimant.findFirstOrThrow({ where: { userId: 'u-viewer' } })
+      await prisma.expenseClaimant.update({ where: { id: own.id }, data: { userId: 'u-accountant' } })
+      try {
+        const read: Call = { label: 'read', route: 'expenseReport', method: 'GET', path: () => `/api/expense-reports/${ids.aValidatedReport}`, params: p({ id: () => ids.aValidatedReport }) }
+        expect((await call('viewer', read)).status).toBe(404)
+        expect((await call('accountant', read)).status).toBe(200)
+        const list = await call('viewer', { label: 'list', route: 'expenseReports', method: 'GET', path: () => `/api/expense-reports?companyId=${A()}` })
+        expect(((await list.json()) as { items: unknown[] }).items).toEqual([])
+      } finally {
+        await prisma.expenseClaimant.update({ where: { id: own.id }, data: { userId: 'u-viewer' } })
+      }
     })
   })
 
