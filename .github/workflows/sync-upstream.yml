@@ -1,0 +1,177 @@
+# kledg-demo only: keeps this fork on top of kledghq/kledg main.
+#
+# Every day (and on demand) it merges kledghq/kledg main into this fork's
+# main. When the merge is clean and the full gate passes (typecheck, lint,
+# tests, build), it pushes main, which redeploys the demo on Vercel. When the
+# merge conflicts or a check fails, nothing is pushed: an issue labelled
+# "upstream-sync" is opened (or commented) with the details, and closed by the
+# next successful sync. Resolve by hand: merge upstream/main locally, fix,
+# push main.
+#
+# Token: the secret UPSTREAM_SYNC_TOKEN is required, because GITHUB_TOKEN
+# can't read another private repository (kledghq/kledg) and can't push
+# commits that change files under .github/workflows (merges from Kledg often
+# do). Fine-grained personal access token, resource owner kledghq,
+# repositories kledghq/kledg and kledghq/kledg-demo, permissions:
+#   Contents: Read and write, Workflows: Read and write (Metadata: Read is
+#   implied). Issues are handled with GITHUB_TOKEN.
+# See README.md (section kledg-demo) for least-privilege alternatives.
+#
+# Kledg's own "Update from Kledg" workflow (update-from-kledg.yml) is kept
+# identical to Kledg (its tests read it) but must never run here: it would
+# open update pull requests that compete with this sync. Each run disables it.
+#
+# No loop: this workflow only runs on schedule and workflow_dispatch; the
+# push it makes triggers CI and the Vercel deployment, never itself.
+
+name: Sync upstream Kledg
+
+on:
+  schedule:
+    - cron: "15 2 * * *" # daily 02:15 UTC, before the 03:00 demo reset
+  workflow_dispatch:
+
+permissions:
+  contents: read # the push uses UPSTREAM_SYNC_TOKEN
+  issues: write
+  actions: write # to keep update-from-kledg.yml disabled
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'kledghq/kledg-demo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: https://github.com/kledghq/kledg.git
+      HAS_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' }}
+      REPORT: /tmp/kledg-sync-report.md
+    steps:
+      - name: Keep Kledg's update workflow disabled
+        run: |
+          STATE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/update-from-kledg.yml" --jq .state 2>/dev/null || echo missing)
+          if [ "$STATE" = "active" ]; then
+            gh workflow disable update-from-kledg.yml -R "$GITHUB_REPOSITORY"
+            echo "Disabled update-from-kledg.yml"
+          fi
+
+      - name: Require the sync token
+        id: token
+        run: |
+          if [ "$HAS_SYNC_TOKEN" != "true" ]; then
+            printf 'Le secret `UPSTREAM_SYNC_TOKEN` est absent : impossible de lire kledghq/kledg et de pousser les fichiers de workflow. Voir README.md, section kledg-demo.\n' > "$REPORT"
+            echo "failed=token" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+
+      - name: Merge kledghq/kledg main
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # actions/checkout's credentials (the sync token) also serve github.com/kledghq/kledg
+          git remote add upstream "$UPSTREAM"
+          git fetch --quiet upstream main
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          echo "upstream=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            echo "Already up to date with kledghq/kledg@$UPSTREAM_SHA."
+            echo "changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changes=true" >> "$GITHUB_OUTPUT"
+          if git merge --no-edit -m "Merge kledghq/kledg main ($(git rev-parse --short "$UPSTREAM_SHA"))" "$UPSTREAM_SHA"; then
+            echo "Merged kledghq/kledg@$UPSTREAM_SHA."
+          else
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            git merge --abort
+            {
+              printf 'La fusion de kledghq/kledg@%s dans main est en conflit.\n\nFichiers en conflit :\n\n' "$UPSTREAM_SHA"
+              printf '%s\n' "$CONFLICTS" | sed 's/^/- `/; s/$/`/'
+              printf '\nÀ résoudre à la main :\n\n```\ngit fetch upstream && git merge upstream/main\n# corriger, puis pnpm typecheck && pnpm lint && pnpm test:run && pnpm build\ngit push origin main\n```\n'
+            } > "$REPORT"
+            echo "failed=conflict" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v6
+        if: steps.merge.outputs.changes == 'true'
+      - uses: actions/setup-node@v7
+        if: steps.merge.outputs.changes == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Gate (install, typecheck, lint, tests, build)
+        id: gate
+        if: steps.merge.outputs.changes == 'true'
+        env:
+          # The build needs configuration values, not a reachable database.
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+          BETTER_AUTH_SECRET: ci-only-build-secret-not-used-at-runtime
+          BETTER_AUTH_URL: http://localhost:3000
+        run: |
+          LOG="$RUNNER_TEMP/gate.log"
+          for STEP in "install --frozen-lockfile" typecheck lint test:run build; do
+            echo "::group::pnpm $STEP"
+            # shellcheck disable=SC2086 # "install --frozen-lockfile" is split on purpose
+            if ! pnpm $STEP > "$LOG" 2>&1; then
+              cat "$LOG"
+              echo "::endgroup::"
+              {
+                printf 'La fusion de kledghq/kledg@%s est propre mais `pnpm %s` échoue. Rien n'"'"'a été poussé.\n\nFin du journal :\n\n```\n' "${{ steps.merge.outputs.upstream }}" "$STEP"
+                tail -n 80 "$LOG"
+                printf '```\n\nJournal complet : %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+              } > "$REPORT"
+              echo "failed=$STEP" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            cat "$LOG"
+            echo "::endgroup::"
+          done
+
+      - name: Push main (redeploys the demo)
+        id: push
+        if: steps.merge.outputs.changes == 'true'
+        run: |
+          if ! git push origin HEAD:main 2> "$RUNNER_TEMP/push.log"; then
+            cat "$RUNNER_TEMP/push.log"
+            {
+              printf 'La fusion et les vérifications sont passées mais le push de main a échoué (main a peut-être avancé entre-temps, ou le jeton manque de droits).\n\n```\n'
+              cat "$RUNNER_TEMP/push.log"
+              printf '```\n'
+            } > "$REPORT"
+            echo "failed=push" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Report the failure in an issue
+        if: failure()
+        run: |
+          [ -s "$REPORT" ] || printf 'La synchronisation a échoué avant la fusion. Journal : %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$REPORT"
+          printf '\n\nExécution : %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$REPORT"
+          gh label create upstream-sync --color B60205 --description "Synchronisation avec kledghq/kledg" -R "$GITHUB_REPOSITORY" 2>/dev/null || true
+          OPEN=$(gh issue list -R "$GITHUB_REPOSITORY" --label upstream-sync --state open --json number --jq '.[0].number // empty')
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" -R "$GITHUB_REPOSITORY" --body-file "$REPORT"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --label upstream-sync --title "Synchronisation avec Kledg en échec" --body-file "$REPORT"
+          fi
+
+      - name: Close the sync issue after a success
+        if: success()
+        run: |
+          OPEN=$(gh issue list -R "$GITHUB_REPOSITORY" --label upstream-sync --state open --json number --jq '.[].number' 2>/dev/null || true)
+          for N in $OPEN; do
+            gh issue close "$N" -R "$GITHUB_REPOSITORY" --comment "Synchronisé avec kledghq/kledg@${{ steps.merge.outputs.upstream }}."
+          done

@@ -1,33 +1,41 @@
 /**
  * Instance UI slots: the interface side extension point of an instance.
  *
- * Kledg renders these components in its layouts and pages; here they render
- * nothing and filter nothing. A deployment that customises Kledg (a fork)
- * replaces this file to add its own interface (a banner, a card on the
- * login page, a floating panel on company pages) and to hide user menu
- * entries, without touching Kledg's layouts. All slots are server
- * components; they may render client components and pass them server
- * actions. See docs/extension-points.md, and lib/instance/policy.ts for the
- * server side.
+ * kledg-demo override: in demo mode (KLEDG_DEMO_MODE=true) the slots render
+ * the demo banner (persona, "Ce que vous pouvez faire" for the accountant,
+ * "Essayer en tant que ..." and "Réinitialiser ma démo" for a visitor's
+ * private sandbox), the login card where the visitor picks a persona
+ * (dirigeant, expert-comptable or administrateur) and enters the demo, and the sample files
+ * panel, and the user menu hides the entries the demo policy
+ * refuses. Without the flag they render nothing, like in Kledg. The demo
+ * components live in components/demo, their server actions in
+ * lib/demo/sandbox/actions.ts; keep this file a thin delegation so merges
+ * from Kledg stay trivial. See docs/extension-points.md.
  */
 
 import type { InstanceActor } from '@/lib/instance/types'
 import type { UserMenuItem } from '@/components/layout/user-menu'
 import type { InstanceSettingsLinks } from '@/components/layout/settings-nav-config'
+import { isActionAllowed } from '@/lib/instance/policy'
+import { isDemoMode } from '@/lib/demo/mode'
+import { enterDemo, resetDemo, switchDemoPersona } from '@/lib/demo/sandbox/actions'
+import { demoInstanceLinks } from '@/lib/demo/admin/links'
+import { DemoBanner } from '@/components/demo/demo-banner'
+import { DemoLogin } from '@/components/demo/demo-login'
+import { DemoSamplesPanel } from '@/components/demo/samples-panel'
 
 /** Above the header of every page of the application frame (company and settings pages). */
-export function InstanceBanner(props: { user: InstanceActor }) {
-  void props
-  return null
+export function InstanceBanner({ user }: { user: InstanceActor }) {
+  return isDemoMode() ? <DemoBanner user={user} reset={resetDemo} switchPersona={switchDemoPersona} /> : null
 }
 
 /**
  * Above the sign-in card on /login. `redirectTo` is the checked same-origin
  * path to open after signing in.
  */
-export function LoginExtra(props: { redirectTo: string }) {
-  void props
-  return null
+export function LoginExtra({ redirectTo }: { redirectTo: string }) {
+  if (!isDemoMode()) return null
+  return <DemoLogin redirectTo={redirectTo} enter={enterDemo} />
 }
 
 /**
@@ -38,13 +46,13 @@ export function LoginExtra(props: { redirectTo: string }) {
  */
 export function CompanyOverlay(props: { user: InstanceActor }) {
   void props
-  return null
+  return isDemoMode() ? <DemoSamplesPanel /> : null
 }
 
-/** The user menu entries (and the matching settings links) shown to `user`. */
+/** The user menu entries (and the matching settings links) shown to `user`: those the policy allows. */
 export async function filterUserMenu(items: UserMenuItem[], user: InstanceActor): Promise<UserMenuItem[]> {
-  void user
-  return items
+  const allowed = await Promise.all(items.map((item) => !item.action || isActionAllowed(item.action, user)))
+  return items.filter((_, index) => allowed[index])
 }
 
 /**
@@ -52,8 +60,8 @@ export async function filterUserMenu(items: UserMenuItem[], user: InstanceActor)
  * is not an instance administrator, by user menu entry ("instance", "users",
  * "updates"...): the settings sidebar then shows the "Instance" group with
  * these links (and the version line links to "updates"). Kledg: none.
+ * kledg-demo: the demo pages of the Administrateur persona (app/(account)/demo).
  */
 export async function instanceSettingsLinks(user: InstanceActor): Promise<InstanceSettingsLinks | null> {
-  void user
-  return null
+  return isDemoMode() ? demoInstanceLinks(user) : null
 }

@@ -18,6 +18,8 @@
 
 ---
 
+> **kledg-demo** : ce dépôt est le fork de [kledghq/kledg](https://github.com/kledghq/kledg) qui sert https://demo.kledg.com. Il ne modifie que les points d'extension de Kledg (`lib/instance/policy.ts`, `components/instance/slots.tsx`, et le point `instanceSettingsLinks` de la barre latérale des paramètres, à reporter dans Kledg), `vercel.json` et `package.json`, et ajoute la démo dans ses propres fichiers (`lib/demo`, `app/api/demo`, `components/demo`). Chaque visiteur y a sa démo privée : un compte temporaire et sa propre copie des sociétés fictives, en tant que dirigeant (administrateur des sociétés), expert-comptable (rôle Comptable, chaque société avec son dirigeant fictif) ou administrateur (pages d'instance de la démo, sans droits d'administrateur réels), réinitialisable ou recréée avec un autre profil à tout moment et supprimée après 24 h d'inactivité. Il se synchronise chaque jour avec Kledg (`.github/workflows/sync-upstream.yml`, secret `UPSTREAM_SYNC_TOKEN`). Démos privées, profils, isolation, limites, variables et synchronisation : [docs/demo.md](docs/demo.md).
+
 Kledg tient la comptabilité générale des petites sociétés françaises (SASU, EURL, SARL, SAS, SCI à l'IS, holdings) : plan comptable PCG 2026, saisie et import d'écritures, banque et rapprochement, immobilisations, clôture, bilan, compte de résultat et export FEC. Il est gratuit et open source : vous le déployez vous-même, vos données restent dans votre base PostgreSQL.
 
 Et votre assistant IA peut y travailler : chaque instance expose un **serveur MCP** pour connecter Claude ou ChatGPT à votre comptabilité ([docs/mcp.md](docs/mcp.md)).

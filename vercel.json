@@ -3,6 +3,10 @@
   "regions": ["fra1"],
   "crons": [
     {
+      "path": "/api/cron/reset-demo",
+      "schedule": "0 3 * * *"
+    },
+    {
       "path": "/api/cron/sync-banks",
       "schedule": "0 5 * * *"
     }

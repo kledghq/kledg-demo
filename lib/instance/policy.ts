@@ -1,14 +1,15 @@
 /**
  * Instance policy: the server side extension point of an instance.
  *
- * A deployment that customises Kledg (a fork) replaces this file to restrict
- * actions, possibly per user, and to declare API routes that authenticate
- * requests themselves. Kledg itself allows everything and declares nothing,
- * so this file never changes the behaviour of a standard instance. Keep it
- * free of imports beyond pure modules: the request proxy (proxy.ts) reads
+ * kledg-demo override: the demo policy (lib/demo/policy.ts) restricts
+ * actions in demo mode and declares the demo's self-authenticated routes.
+ * Without KLEDG_DEMO_MODE=true everything is allowed, like in Kledg. Keep
+ * this file a thin delegation so merges from Kledg stay trivial, and keep
+ * it free of database and Node imports: the request proxy reads
  * SELF_AUTHENTICATED_API_ROUTES. See docs/extension-points.md.
  */
 
+import { demoIsActionAllowed, demoRefusalMessage, DEMO_SELF_AUTHENTICATED_API_ROUTES } from '@/lib/demo/policy'
 import type { InstanceAction, InstanceActor } from './types'
 
 /**
@@ -16,15 +17,12 @@ import type { InstanceAction, InstanceActor } from './types'
  * anonymous requests (password reset request, first-run setup, emails).
  */
 export async function isActionAllowed(action: InstanceAction, actor: InstanceActor | null = null): Promise<boolean> {
-  void action
-  void actor
-  return true
+  return demoIsActionAllowed(action, actor)
 }
 
 /** French message of the 403 answered when `action` is refused. */
 export function actionRefusalMessage(action: InstanceAction): string {
-  void action
-  return "Cette action est désactivée sur cette instance. Contactez l'administrateur de l'instance."
+  return demoRefusalMessage(action)
 }
 
 /**
@@ -33,4 +31,4 @@ export function actionRefusalMessage(action: InstanceAction): string {
  * through without a session and the route architecture test
  * (lib/api/__tests__/routes.test.ts) accepts their handlers unwrapped.
  */
-export const SELF_AUTHENTICATED_API_ROUTES: Readonly<Record<string, string>> = {}
+export const SELF_AUTHENTICATED_API_ROUTES: Readonly<Record<string, string>> = DEMO_SELF_AUTHENTICATED_API_ROUTES
