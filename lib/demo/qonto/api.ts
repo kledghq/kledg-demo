@@ -299,6 +299,13 @@ function authorizedResponse(
       return emptyList('labels', request.searchParams)
     case 'memberships':
       return emptyList('memberships', request.searchParams)
+    // Qonto's invoicing (Factures, "Importer depuis Qonto", lib/invoices/import-qonto-invoices.service.ts):
+    // the simulated organizations issue and receive their invoices in Kledg, none in Qonto.
+    case 'clients':
+    case 'client_invoices':
+    case 'supplier_invoices':
+      if (id) return error(404, 'Not found')
+      return emptyList(resource, request.searchParams)
     default:
       return error(404, `Unknown endpoint /${request.path.join('/')}`)
   }

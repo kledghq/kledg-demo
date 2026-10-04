@@ -112,6 +112,17 @@ describe('simulated Qonto API', () => {
     expect(json.meta).toMatchObject({ current_page: 1, next_page: null, total_count: 0 })
   })
 
+  it('answers the invoicing endpoints of the Qonto invoice import with empty lists (no invoice in the simulated Qonto)', () => {
+    for (const resource of ['clients', 'client_invoices', 'supplier_invoices']) {
+      const res = call([resource], { page: '1', per_page: '100' })
+      expect(res.status, resource).toBe(200)
+      const json = (res as { json: Record<string, unknown> }).json
+      expect(json[resource]).toEqual([])
+      expect(json.meta).toMatchObject({ next_page: null, total_count: 0 })
+      expect(call([resource, 'some-id']).status).toBe(404)
+    }
+  })
+
   it('gives each sandbox its own receipt ids (stored with a unique constraint), with their PDF file', () => {
     for (const profile of DEMO_PROFILES) {
       const tx = profile.engine.transactions('2026-09-01', '2026-09-30').find((t) => t.attachmentIds.length > 0)!
