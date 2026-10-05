@@ -1,7 +1,7 @@
 /**
- * Facts shared by several demo companies, so their books agree: Lumen
- * Holding owns Atelier Lumen, invoices it management fees and receives its
- * dividends.
+ * Facts shared by several demo companies, so their books agree. The group
+ * itself (what Lumen Holding holds, the management fees, the advance, the
+ * invoices between the companies) is in group.ts.
  */
 
 import { scheduledBusinessDay } from '../engine'
@@ -10,39 +10,10 @@ import { scheduledBusinessDay } from '../engine'
 export const DEMO_EPOCH = '2025-01-01'
 
 /**
- * Monthly management fees of Lumen Holding to Atelier Lumen under their
- * "Convention d'animation" (lib/management-fees, FIXED pricing, one
- * subsidiary): 1,500 EUR excluding VAT a month, VAT 20 %, invoiced on the
- * first day of the month in the series LH-<year>-<sequence> and paid by
- * Atelier Lumen on the 25th. The holding opted to pay VAT on its services
- * on debits (CGI art. 269, 2, c), so the VAT of an invoice is due in the
- * month of the invoice; Atelier Lumen deducts it on payment.
- */
-export const LUMEN_MANAGEMENT_FEE = {
-  net: 1500,
-  vatRate: 20,
-  day: 25,
-  convention: "Convention d'animation",
-  invoicePrefix: 'LH',
-  /** Auxiliary account of Atelier Lumen among the holding's customers (the first tiers, C00001). */
-  customerAux: 'C00001',
-  customerName: 'Atelier Lumen',
-}
-
-/** Number of the holding's management fee invoice of a month: the month is the sequence of a monthly series. */
-export function lumenFeeInvoiceNumber(year: number, month: number): string {
-  return `${LUMEN_MANAGEMENT_FEE.invoicePrefix}-${year}-${String(month).padStart(3, '0')}`
-}
-
-/** Invoice date of a month's management fees (terme à échoir: the first day of the month). */
-export function lumenFeeInvoiceDate(year: number, month: number): string {
-  return `${year}-${String(month).padStart(2, '0')}-01`
-}
-
-/**
  * Dividends paid by Atelier Lumen to Lumen Holding (100% owner): voted at the
- * annual general meeting in June, paid a few days later (régime mère-fille on
- * the holding side, CGI art. 145 and 216).
+ * annual general meeting in June, which approves the accounts of the year
+ * before and allocates its result, paid a few days later (régime mère-fille
+ * on the holding side, CGI art. 145 and 216).
  */
 export function lumenDividend(year: number): { agm: string; payment: string; amount: number } {
   return {

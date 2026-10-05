@@ -79,7 +79,7 @@ export interface PersonaCopy {
 export const PERSONAS: Readonly<Record<DemoPersona, PersonaCopy>> = {
   director: {
     label: 'Dirigeant',
-    description: 'Vous gérez vos quatre sociétés\u00a0: banque, saisie, clôture et réglages.',
+    description: 'Vous dirigez un petit groupe de quatre sociétés\u00a0: banque, saisie, clôture, vue groupe et réglages.',
     asPersona: 'en tant que dirigeant',
     switchAction: 'Passer en dirigeant',
     highlights: [

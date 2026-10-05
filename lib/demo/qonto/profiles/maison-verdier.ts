@@ -4,9 +4,16 @@
  * 278-0 bis A) through the online shop, paid out twice a week by the card
  * payment provider, and corporate gift boxes with wine at 20% paid by
  * transfer. Buys goods for resale (607) from producers; stock variation
- * (6037) booked at closing. The majority manager (gérant majoritaire, TNS)
- * takes no salary: his TNS contributions are charged to 646 and paid
- * monthly to URSSAF.
+ * (6037) booked at closing.
+ *
+ * Since December 2024 its sole partner is Lumen Holding (group.ts), to which
+ * Thomas Verdier contributed his parts; he stays its gérant, unpaid (gérant
+ * non associé, mandat gratuit), so the company pays no salary and no social
+ * contributions. It receives the holding's management fee invoices (AC:
+ * 6226, 44566, 401 with the holding's auxiliary account, paid on the 25th),
+ * borrowed 15,000 EUR from it in current account on 1 July 2025 (455100,
+ * interest invoiced each 31 December, 6615, paid mid January) and bought the
+ * design of its gift boxes from Atelier Lumen in October 2025.
  */
 
 import {
@@ -32,14 +39,23 @@ import {
   type Schedule,
 } from '../engine'
 import { DEMO_EPOCH } from './shared'
+import {
+  DESIGN_INVOICE,
+  GROUP_ACCOUNTS,
+  MANAGEMENT_FEE,
+  VERDIER_SLUG,
+  advanceDrafts,
+  feeInvoice,
+  feeSubsidiary,
+  groupInvoiceEntries,
+  interestInvoice,
+  paymentDraft,
+} from './group'
 
-export const VERDIER_SLUG = 'maison-verdier'
+export { VERDIER_SLUG }
 
 /** Card payment provider fees, invoiced monthly on the previous month's payouts (financial service, no VAT). */
 export const VERDIER_CARD_FEE_RATE = 0.014
-
-/** Monthly TNS contributions of the majority manager (provisional schedule). */
-export const VERDIER_TNS_CONTRIBUTIONS = 380
 
 /** Goods in stock at the end of each year (physical count). */
 export const VERDIER_STOCK: Record<number, number> = { 2024: 18000, 2025: 21400, 2026: 23800 }
@@ -253,18 +269,18 @@ const schedules: Schedule[] = [
       }),
   },
   {
-    day: 5,
-    build: (year, month) => ({
-      kind: 'urssaf',
-      side: 'debit',
-      amount: VERDIER_TNS_CONTRIBUTIONS,
-      vatRate: null,
-      label: `PRLV URSSAF cotisations TNS gérant ${monthName(month)} ${year}`,
-      counterparty: 'URSSAF',
-      category: 'tax',
-      operationType: 'direct_debit',
-      account: '646',
-    }),
+    // Pays the holding's management fee invoice of the month (401).
+    day: MANAGEMENT_FEE.day,
+    build: (year, month) => paymentDraft(feeInvoice(year, month, feeSubsidiary(VERDIER_SLUG))),
+  },
+  {
+    // The interest of the advance for the year before.
+    day: 15,
+    months: [1],
+    build: (year) => {
+      const interest = interestInvoice(year - 1)
+      return interest ? paymentDraft(interest) : null
+    },
   },
   {
     day: 10,
@@ -300,6 +316,9 @@ const schedules: Schedule[] = [
 ]
 
 const oneOffs = {
+  ...advanceDrafts(VERDIER_SLUG),
+  // Pays Atelier Lumen's design invoice (401).
+  [DESIGN_INVOICE.paymentDate]: [paymentDraft(DESIGN_INVOICE)],
   [VERDIER_DISPLAY_CASE.date]: [
     expense('equipment', grossFromNet(VERDIER_DISPLAY_CASE.amountHT, 20), 20, {
       label: 'VIR Froid Équipement Pro vitrine réfrigérée', counterparty: 'Froid Équipement Pro',
@@ -310,7 +329,7 @@ const oneOffs = {
 }
 
 /** Year-end stock variation (PCG art. 946-60): opening stock reversed, closing stock booked. */
-function periodEntries(year: number): LedgerEntry[] {
+function stockVariation(year: number): LedgerEntry[] {
   const opening = VERDIER_STOCK[year - 1]
   const closing = VERDIER_STOCK[year]
   if (opening === undefined || closing === undefined) return []
@@ -352,5 +371,6 @@ export const MAISON_VERDIER_SPEC: ProfileSpec = {
     ]),
   },
   fixedAssets: [VERDIER_DISPLAY_CASE],
-  periodEntries,
+  periodEntries: (year) => [...stockVariation(year), ...groupInvoiceEntries(VERDIER_SLUG, year)],
+  subAccounts: GROUP_ACCOUNTS[VERDIER_SLUG],
 }

@@ -1,8 +1,12 @@
 /**
  * Atelier Lumen: SASU at IS, design studio in Lyon, VAT réel normal (VAT on
  * receipts for services, CGI art. 269-2-c). The president is paid a monthly
- * salary (assimilé salarié). Wholly owned by Lumen Holding, which invoices
- * management fees and receives the dividends.
+ * salary (assimilé salarié). Wholly owned by Lumen Holding (group.ts), which
+ * invoices management fees (purchase invoices in AC: 6226, 44566, 401 with
+ * the holding's auxiliary account, paid on the 25th) and receives the
+ * dividends. In October 2025 the studio designed the gift boxes of Maison
+ * Verdier, the other subsidiary: a sales invoice in VE (411, 706, VAT
+ * waiting in 44574 until paid).
  */
 
 import {
@@ -25,7 +29,8 @@ import {
   type RandomCategory,
   type Schedule,
 } from '../engine'
-import { DEMO_EPOCH, LUMEN_MANAGEMENT_FEE, lumenDividend, lumenFeeInvoiceNumber } from './shared'
+import { DEMO_EPOCH, lumenDividend } from './shared'
+import { DESIGN_INVOICE, GROUP_ACCOUNTS, LUMEN_SLUG, MANAGEMENT_FEE, feeInvoice, feeSubsidiary, groupInvoiceEntries, paymentDraft, receiptDraft } from './group'
 import { DIRECTOR_CLAIMANT, DIRECTOR_REIMBURSEMENT, reimbursedReportTotal } from '@/lib/demo/expense-reports'
 
 /** Monthly payroll of the president (assimilé salarié). */
@@ -285,14 +290,9 @@ const schedules: Schedule[] = [
       }),
   },
   {
-    day: LUMEN_MANAGEMENT_FEE.day,
-    build: (year, month) =>
-      expense('management_fees', grossFromNet(LUMEN_MANAGEMENT_FEE.net, LUMEN_MANAGEMENT_FEE.vatRate), LUMEN_MANAGEMENT_FEE.vatRate, {
-        label: `VIR Lumen Holding management fees ${monthName(month)} ${year} ${lumenFeeInvoiceNumber(year, month)}`,
-        counterparty: 'Lumen Holding', category: 'other_service',
-        operationType: 'transfer', account: '6226',
-        reference: lumenFeeInvoiceNumber(year, month),
-      }),
+    // Pays the holding's management fee invoice of the month (401).
+    day: MANAGEMENT_FEE.day,
+    build: (year, month) => paymentDraft(feeInvoice(year, month, feeSubsidiary(LUMEN_SLUG))),
   },
   {
     day: 28,
@@ -332,6 +332,8 @@ const schedules: Schedule[] = [
 ]
 
 const oneOffs: Record<string, Draft[]> = {
+  // Maison Verdier pays the design invoice (411).
+  [DESIGN_INVOICE.paymentDate]: [receiptDraft(DESIGN_INVOICE)],
   [LUMEN_LAPTOP.date]: [
     expense('equipment', grossFromNet(LUMEN_LAPTOP.amountHT, 20), 20, {
       label: 'CB Ordinateur portable 16 pouces', counterparty: 'Matériel informatique',
@@ -418,11 +420,12 @@ function periodEntries(year: number, previous: FiscalYearSummary | null): Ledger
           { account: '457', credit: dividend.amount },
         ],
   })
+  entries.push(...groupInvoiceEntries(LUMEN_SLUG, year))
   return entries
 }
 
 export const ATELIER_LUMEN_SPEC: ProfileSpec = {
-  slug: 'atelier-lumen',
+  slug: LUMEN_SLUG,
   seed: 'kledg-demo',
   epoch: DEMO_EPOCH,
   daily: { mode: 'busy', max: 3 },
@@ -448,4 +451,5 @@ export const ATELIER_LUMEN_SPEC: ProfileSpec = {
     }]
   },
   periodEntries,
+  subAccounts: GROUP_ACCOUNTS[LUMEN_SLUG],
 }

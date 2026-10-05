@@ -4,7 +4,7 @@
  */
 
 import type { DemoProfileEngine } from './qonto/engine'
-import { LUMEN_MANAGEMENT_FEE } from './qonto/profiles/shared'
+import { LUMEN_SLUG, MANAGEMENT_FEE, VERDIER_SLUG, feeSubsidiary } from './qonto/profiles/group'
 
 export interface BudgetLineSpec {
   prefix: string
@@ -21,7 +21,7 @@ export interface BudgetLineSpec {
  * Budget lines of the 2026 budgets. Atelier Lumen plans more sales and its
  * known commitments (rent, management fees, payroll, software, insurance,
  * CFE) as recurring items; Maison Verdier plans its sales and purchases from
- * 2025. Accounts left out (books, depreciation, corporate tax) show as
+ * 2025, and its management fees as a recurring item. Accounts left out (books, depreciation, corporate tax) show as
  * "hors budget" in the comparison.
  */
 export const DEMO_BUDGETS: Readonly<Record<string, readonly BudgetLineSpec[]>> = {
@@ -34,7 +34,7 @@ export const DEMO_BUDGETS: Readonly<Record<string, readonly BudgetLineSpec[]>> =
     {
       prefix: '6226',
       label: 'Frais de gestion Lumen Holding',
-      recurring: [{ label: `${LUMEN_MANAGEMENT_FEE.convention}, forfait mensuel`, amount: LUMEN_MANAGEMENT_FEE.net, frequency: 'MONTHLY', startMonth: '2026-01' }],
+      recurring: [{ label: `${MANAGEMENT_FEE.convention}, forfait mensuel`, amount: feeSubsidiary(LUMEN_SLUG).net, frequency: 'MONTHLY', startMonth: '2026-01' }],
     },
     { prefix: '625', label: 'Déplacements, missions et réceptions', fromActuals: { growth: 1, step: 10 } },
     { prefix: '626', label: 'Télécommunications, hébergement web et envois', fromActuals: { growth: 1, step: 10 } },
@@ -57,7 +57,11 @@ export const DEMO_BUDGETS: Readonly<Record<string, readonly BudgetLineSpec[]>> =
     { prefix: '6132', label: 'Loyer de l’entrepôt', recurring: [{ label: 'Loyer mensuel', amount: 950, frequency: 'MONTHLY', startMonth: '2026-01' }] },
     { prefix: '6231', label: 'Publicité en ligne', fromActuals: { growth: 1.1, step: 10 } },
     { prefix: '6242', label: 'Transports sur ventes', fromActuals: { growth: 1.05, step: 10 } },
-    { prefix: '646', label: 'Cotisations sociales du gérant', recurring: [{ label: 'Acompte mensuel de cotisations', amount: 380, frequency: 'MONTHLY', startMonth: '2026-01' }] },
+    {
+      prefix: '6226',
+      label: 'Frais de gestion Lumen Holding',
+      recurring: [{ label: `${MANAGEMENT_FEE.convention}, forfait mensuel`, amount: feeSubsidiary(VERDIER_SLUG).net, frequency: 'MONTHLY', startMonth: '2026-01' }],
+    },
   ],
 }
 

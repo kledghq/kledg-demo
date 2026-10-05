@@ -322,14 +322,6 @@ export const DEMO_COMPANIES: readonly DemoCompany[] = [
     address: { street: '27 quai des Chartrons', postalCode: '33000', city: 'Bordeaux' },
     rules: [
       {
-        name: 'URSSAF cotisations TNS du gérant',
-        description: 'Cotisations personnelles du gérant majoritaire, charge de la société (646)',
-        autoCreate: true,
-        priority: 80,
-        conditions: [condition('counterparty', 'equals', 'URSSAF'), debit, condition('operationType', 'equals', 'direct_debit')],
-        entryLines: payment('646', false),
-      },
-      {
         name: 'Versements boutique en ligne',
         description: 'Encaissements CB de la boutique reversés deux fois par semaine (épicerie, TVA 5,5 %)',
         autoCreate: true,
@@ -352,6 +344,16 @@ export const DEMO_COMPANIES: readonly DemoCompany[] = [
         priority: 70,
         conditions: [condition('counterparty', 'equals', 'Foncière des Docks'), debit, condition('label', 'contains', 'loyer')],
         entryLines: payment('6132', true),
+      },
+      {
+        name: 'Frais de gestion Lumen Holding',
+        // The holding's invoice of the month is booked when received (AC,
+        // 6226 and VAT): the transfer settles the supplier account.
+        description: 'Règlement à la holding de sa facture de frais de gestion du mois (compte fournisseur 401)',
+        autoCreate: true,
+        priority: 70,
+        conditions: [condition('counterparty', 'equals', 'Lumen Holding'), debit, condition('label', 'contains', 'management fees')],
+        entryLines: payment('401', false),
       },
       {
         name: 'Abonnement plateforme e-commerce',
@@ -460,22 +462,25 @@ export const DEMO_COMPANIES: readonly DemoCompany[] = [
     vatExemptReason: null,
     corporateTaxRegime: 'simplified',
     taxOffice: 'SIE de Lyon',
-    totalShares: 12000,
+    // The contributions of the titres (group.ts HOLDING_CAPITAL): 240,000 EUR.
+    totalShares: 24000,
     shareNominalValue: 10,
     color: '#3a5a8c',
     address: { street: '12 rue des Ateliers', postalCode: '69002', city: 'Lyon' },
     rules: [
-      {
-        name: 'Management fees Atelier Lumen',
-        // The invoice of the month (Frais de gestion, then Factures de vente)
-        // carries the revenue and the VAT (on debits): the transfer settles
-        // the customer account, and the payment is then recorded on the invoice.
-        description: 'Règlement par la filiale de la facture de frais de gestion du mois (compte client 411)',
-        autoCreate: true,
-        priority: 70,
-        conditions: [condition('counterparty', 'equals', 'Atelier Lumen'), credit, condition('label', 'contains', 'management fees')],
-        entryLines: receipt('411', false),
-      },
+      ...['Atelier Lumen', 'Maison Verdier'].map(
+        (subsidiary): DemoRule => ({
+          name: `Frais de gestion ${subsidiary}`,
+          // The invoice of the month (Frais de gestion, then Factures de vente)
+          // carries the revenue and the VAT (on debits): the transfer settles
+          // the customer account, and the payment is then recorded on the invoice.
+          description: 'Règlement par la filiale de la facture de frais de gestion du mois (compte client 411)',
+          autoCreate: true,
+          priority: 70,
+          conditions: [condition('counterparty', 'equals', subsidiary), credit, condition('label', 'contains', 'management fees')],
+          entryLines: receipt('411', false),
+        }),
+      ),
       {
         name: 'Honoraires expert-comptable',
         description: 'Honoraires trimestriels du cabinet comptable',

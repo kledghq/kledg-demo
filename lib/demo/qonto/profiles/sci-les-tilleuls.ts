@@ -5,7 +5,10 @@
  * building is split between land (2111, not depreciated) and construction
  * (2131, straight-line over 30 years, PCG art. 214-13). It was financed by a
  * bank loan (164) repaid monthly: each instalment is split between capital
- * (164) and interest (6611).
+ * (164) and interest (6611). Its partners are Hélène Garnier, its gérante
+ * (60 parts), and Lumen Holding (40 parts, a participation: group.ts); the
+ * associates' current account (455) is Hélène Garnier's and Marc
+ * Vasseur's, who kept it when he contributed his parts to the holding.
  */
 
 import {
@@ -24,8 +27,9 @@ import {
 } from '../engine'
 import { buildDepreciationPlan, sumPlanForPeriod } from '@/lib/fixed-assets/depreciation-plan'
 import { DEMO_EPOCH } from './shared'
+import { TILLEULS_SLUG } from './group'
 
-export const TILLEULS_SLUG = 'sci-les-tilleuls'
+export { TILLEULS_SLUG }
 
 export const TILLEULS_LAND = { account: '2111', amount: 76000 }
 
