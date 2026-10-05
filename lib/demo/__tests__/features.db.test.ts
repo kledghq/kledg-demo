@@ -166,7 +166,7 @@ describe.skipIf(!available)('management features of the demo sandboxes', () => {
           },
         },
       })
-      billings.sort((a, b) => a.salesInvoice!.number.localeCompare(b.salesInvoice!.number))
+      billings.sort((a, b) => (a.salesInvoice!.number ?? '').localeCompare(b.salesInvoice!.number ?? ''))
       const expected = months.flatMap(([y, m]) => MANAGEMENT_FEE.subsidiaries.map((sub) => feeInvoiceNumber(y, m, sub.slug)))
       expect(billings.map((b) => b.salesInvoice!.number)).toEqual(expected)
 
