@@ -1,13 +1,20 @@
 /**
- * MCP coverage of the instance's own API routes (docs/extension-points.md):
- * a deployment that adds routes under app/api (sign-up, billing, a
- * simulated bank) declares here, for each "METHOD /api/path", the MCP tools
- * doing the same, or why the route stays out of the MCP server (a French
- * reason). The guard of lib/mcp/__tests__/route-coverage.test.ts reads it
- * with Kledg's own map (lib/mcp/route-coverage.ts), so a fork never edits
- * Kledg's map. Kledg: no route of its own here.
+ * MCP coverage of the instance's own API routes (docs/extension-points.md).
+ * Kledg demo: the simulated Qonto API, the sample files and the sandbox
+ * reset stay out of the MCP server.
  */
 
 export type InstanceRouteCoverage = { tools: readonly string[] } | { excluded: string }
 
-export const INSTANCE_ROUTE_COVERAGE: Readonly<Record<string, InstanceRouteCoverage>> = {}
+const SIMULATED_BANK =
+  "API Qonto simulée de la démonstration, appelée par la synchronisation bancaire de Kledg, jamais par un utilisateur ; l'assistant synchronise avec sync_bank_data."
+const SAMPLES = "Fichiers d'exemple de la démonstration à télécharger (relevés, FEC) ; l'assistant importe avec import_statement."
+const CRON = "Tâche planifiée appelée par la plateforme avec son secret, jamais par un utilisateur."
+
+export const INSTANCE_ROUTE_COVERAGE: Readonly<Record<string, InstanceRouteCoverage>> = {
+  'GET /api/cron/reset-demo': { excluded: CRON },
+  'GET /api/demo/qonto/v2/[...path]': { excluded: SIMULATED_BANK },
+  'POST /api/demo/qonto/v2/[...path]': { excluded: SIMULATED_BANK },
+  'GET /api/demo/samples/[format]': { excluded: SAMPLES },
+  'GET /api/demo/samples': { excluded: SAMPLES },
+}
