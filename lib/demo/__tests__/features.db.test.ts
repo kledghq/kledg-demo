@@ -1,10 +1,14 @@
 /**
  * Management features seeded in every demo sandbox (lib/demo/seed-features.ts),
  * against PostgreSQL (lib/__tests__/helpers/test-db.ts):
- * - management fees: Lumen Holding's convention, one invoice and billing per
- *   booked month whose amounts are the pricing engine's, linked to the VE
- *   entries, paid and lettered; the months after the books are left to the
- *   visitor, who computes and invoices them through Kledg's routes;
+ * - management fees: Lumen Holding's convention with its two subsidiaries,
+ *   one billing per subsidiary and booked month whose amounts are the pricing
+ *   engine's, linked to the holding's VE sales invoice and the subsidiary's
+ *   AC purchase invoice, paid and lettered; the months after the books are
+ *   left to the visitor, who computes and invoices them through Kledg's routes;
+ * - the group (lib/demo/qonto/profiles/group.ts): shareholders and people,
+ *   intragroup invoices on both sides, and the group view and participations
+ *   Kledg computes from them (director, admin and accountant personas);
  * - budgets: 2026 budgets of Atelier Lumen and Maison Verdier on class 6 and
  *   7 prefixes, close to 2025, with meaningful variances;
  * - expense reports: the president's claimant file and her three reports
@@ -41,7 +45,9 @@ vi.mock('next/headers', () => ({
 }))
 
 import { prepareTestDatabase, testDatabaseAvailable } from '@/lib/__tests__/helpers/test-db'
-import { lumenFeeInvoiceNumber, LUMEN_MANAGEMENT_FEE } from '../qonto/profiles/shared'
+import { DESIGN_INVOICE, GROUP_STAKES, MANAGEMENT_FEE, VERDIER_ADVANCE, advanceInterest, feeInvoiceNumber, feeSubsidiary } from '../qonto/profiles/group'
+import { DEMO_PERSON_ROLES } from '../people'
+import { lumenDividend } from '../qonto/profiles/shared'
 import { profileBySlug } from '../qonto/profiles'
 import { DIRECTOR_CLAIMANT, DIRECTOR_REIMBURSEMENT, demoReportTotals, REIMBURSED_REPORT } from '../expense-reports'
 import { DEMO_BUDGETS } from '../budgets'
@@ -59,7 +65,7 @@ interface Sandbox {
   companies: Map<string, string>
 }
 
-async function provision(persona: 'director' | 'accountant', ip: string): Promise<Sandbox> {
+async function provision(persona: 'director' | 'accountant' | 'admin', ip: string): Promise<Sandbox> {
   const { provisionSandbox } = await import('../sandbox/service')
   const result = await provisionSandbox({ ip, persona })
   if (!result.ok) throw new Error(`provisioning failed: ${result.reason}`)
@@ -100,6 +106,7 @@ function bookedMonths(cutoff: string) {
 
 let director: Sandbox
 let accountant: Sandbox
+let admin: Sandbox
 
 describe.skipIf(!available)('management features of the demo sandboxes', () => {
   beforeAll(async () => {
@@ -113,27 +120,28 @@ describe.skipIf(!available)('management features of the demo sandboxes', () => {
   })
 
   describe('management fees of Lumen Holding', () => {
-    it('has the "Convention d\'animation" with Atelier Lumen: a fixed monthly fee, VAT 20 %, series LH', async () => {
+    it('has the "Convention d\'animation" with both subsidiaries: a fixed monthly fee split 60 / 40, VAT 20 %, series LH', async () => {
       const holding = director.companies.get('lumen-holding')!
-      const conventions = await prisma.managementFeeConvention.findMany({ where: { companyId: holding }, include: { subsidiaries: true } })
+      const conventions = await prisma.managementFeeConvention.findMany({ where: { companyId: holding }, include: { subsidiaries: { orderBy: { position: 'asc' } } } })
       expect(conventions).toHaveLength(1)
       const [convention] = conventions
       expect(convention).toMatchObject({
         label: "Convention d'animation",
         pricing: 'FIXED',
-        allocationKey: 'EQUAL',
+        allocationKey: 'CUSTOM',
         vatRateBp: 2000,
         revenueAccountCode: '706',
         expenseAccountCode: '6226',
         invoicePrefix: 'LH',
       })
-      expect(cents(convention.fixedAmount!)).toBe(LUMEN_MANAGEMENT_FEE.net * 100)
-      expect(convention.subsidiaries.map((s) => s.subsidiaryId)).toEqual([director.companies.get('atelier-lumen')])
-      // The holding is a shareholder of the subsidiary: the nav entry shows.
-      expect(await prisma.shareholder.count({ where: { companyId: director.companies.get('atelier-lumen'), companyShareholderId: holding } })).toBe(1)
+      expect(cents(convention.fixedAmount!)).toBe(MANAGEMENT_FEE.totalNet * 100)
+      expect(convention.subsidiaries.map((s) => [s.subsidiaryId, s.sharePercentBp])).toEqual([
+        [director.companies.get('atelier-lumen'), 6000],
+        [director.companies.get('maison-verdier'), 4000],
+      ])
     })
 
-    it('invoices every booked month: billing amounts equal the engine computation, invoices linked to their VE entry, paid and lettered', async () => {
+    it('bills every booked month of each subsidiary: engine amounts, sales invoice in the holding, purchase invoice in the subsidiary, both paid and lettered', async () => {
       const holding = director.companies.get('lumen-holding')!
       const cutoff = cutoffOf(new Date())
       const months = bookedMonths(cutoff)
@@ -143,60 +151,76 @@ describe.skipIf(!available)('management features of the demo sandboxes', () => {
         include: {
           salesInvoice: {
             include: {
-              lines: true,
               vatBreakdown: true,
-              payments: { include: { entryLine: { include: { accountingEntry: true, account: true } } } },
+              payments: { include: { entryLine: { include: { account: true } } } },
+              tiers: true,
+              entry: { include: { lines: { include: { account: true } }, journal: true } },
+            },
+          },
+          purchaseInvoice: {
+            include: {
+              payments: { include: { entryLine: { include: { account: true } } } },
               tiers: true,
               entry: { include: { lines: { include: { account: true } }, journal: true } },
             },
           },
         },
       })
-      expect(billings.map((b) => b.salesInvoice!.number)).toEqual(months.map(([y, m]) => lumenFeeInvoiceNumber(y, m)))
+      billings.sort((a, b) => a.salesInvoice!.number.localeCompare(b.salesInvoice!.number))
+      const expected = months.flatMap(([y, m]) => MANAGEMENT_FEE.subsidiaries.map((sub) => feeInvoiceNumber(y, m, sub.slug)))
+      expect(billings.map((b) => b.salesInvoice!.number)).toEqual(expected)
 
       // The pricing engine, through the service the preview route uses, gives the invoiced amounts.
       const { computeConventionFees } = await import('@/lib/management-fees/compute-management-fees.service')
       const { userGroupAccess } = await import('@/lib/management-fees/access')
       const access = userGroupAccess({ id: director.userId, email: director.email, name: null, role: 'user' })
-      for (const billing of [billings[0], billings[13], billings[billings.length - 1]]) {
+      for (const billing of [billings[0], billings[27], billings[billings.length - 1]]) {
         const period = { periodStart: billing.periodStart.toISOString().slice(0, 10), periodEnd: billing.periodEnd.toISOString().slice(0, 10) }
         const { result } = await computeConventionFees(holding, billing.conventionId, period, access)
-        expect([cents(billing.amountExclTax), cents(billing.vatAmount), cents(billing.amountInclTax)]).toEqual([
-          result.parts[0].amountExclTaxCents,
-          result.parts[0].vatCents,
-          result.parts[0].amountInclTaxCents,
-        ])
+        const part = result.parts.find((p) => p.subsidiaryId === billing.subsidiaryId)!
+        expect([cents(billing.amountExclTax), cents(billing.vatAmount), cents(billing.amountInclTax)]).toEqual([part.amountExclTaxCents, part.vatCents, part.amountInclTaxCents])
       }
 
+      const slugOf = new Map([...director.companies.entries()].map(([slug, id]) => [id, slug]))
       for (const billing of billings) {
-        const invoice = billing.salesInvoice!
-        expect([cents(invoice.totalExclTax), cents(invoice.totalVat), cents(invoice.totalInclTax)]).toEqual([150000, 30000, 180000])
-        expect(cents(billing.amountInclTax)).toBe(cents(invoice.totalInclTax))
-        expect(invoice.tiers).toMatchObject({ name: 'Atelier Lumen', auxiliaryAccountNumber: LUMEN_MANAGEMENT_FEE.customerAux, kind: 'CUSTOMER' })
-        expect(invoice.issueDate.toISOString().slice(0, 10)).toBe(billing.periodStart.toISOString().slice(0, 10))
-        expect(invoice.vatBreakdown.map((v) => [v.vatRateBp, cents(v.baseAmount), cents(v.vatAmount)])).toEqual([[2000, 150000, 30000]])
-        // The VE entry is the invoice's: 411 (auxiliary C00001) / 706 / 44571, VAT on debits.
-        const entry = invoice.entry!
+        const sub = feeSubsidiary(slugOf.get(billing.subsidiaryId)!)
+        const net = sub.net * 100
+        const sale = billing.salesInvoice!
+        expect([cents(sale.totalExclTax), cents(sale.totalVat), cents(sale.totalInclTax)]).toEqual([net, net / 5, net * 1.2])
+        expect(sale.tiers).toMatchObject({ name: sub.slug === 'atelier-lumen' ? 'Atelier Lumen' : 'Maison Verdier', kind: 'CUSTOMER' })
+        expect(sale.issueDate.toISOString().slice(0, 10)).toBe(billing.periodStart.toISOString().slice(0, 10))
+        // The VE entry is the invoice's: 411 (the subsidiary's auxiliary account) / 706 / 44571, VAT on debits.
+        const entry = sale.entry!
         expect(entry.journal.code).toBe('VE')
-        expect(entry.reference).toBe(invoice.number)
+        expect(entry.reference).toBe(sale.number)
         expect(entry.status).toBe('validated')
-        const byCode = (code: string) => entry.lines.find((l) => l.account.code === code)!
-        expect([cents(byCode('411').debit), byCode('411').auxiliaryAccountNumber]).toEqual([180000, 'C00001'])
-        expect(cents(byCode('706').credit)).toBe(150000)
-        expect(cents(byCode('44571').credit)).toBe(30000)
+        const byCode = (lines: typeof entry.lines, code: string) => lines.find((l) => l.account.code === code)!
+        expect([cents(byCode(entry.lines, '411').debit), byCode(entry.lines, '411').auxiliaryAccountNumber]).toEqual([net * 1.2, sale.tiers.auxiliaryAccountNumber])
+        expect(cents(byCode(entry.lines, '706').credit)).toBe(net)
         // Paid by the transfer of the 25th, lettered with it.
-        expect(invoice.payments).toHaveLength(1)
-        const payment = invoice.payments[0]
-        expect(cents(payment.amount)).toBe(180000)
-        expect(payment.entryLine.account.code).toBe('411')
-        expect(payment.entryLine.letteringCode).toBeTruthy()
-        expect(payment.entryLine.letteringCode).toBe(byCode('411').letteringCode)
+        expect(sale.payments).toHaveLength(1)
+        expect(sale.payments[0].entryLine.account.code).toBe('411')
+        expect(sale.payments[0].entryLine.letteringCode).toBeTruthy()
+        expect(sale.payments[0].entryLine.letteringCode).toBe(byCode(entry.lines, '411').letteringCode)
+
+        // The subsidiary's side: the same invoice received, AC 6226 / 44566 / 401, paid and lettered.
+        const purchase = billing.purchaseInvoice!
+        expect(purchase).toMatchObject({ number: sale.number, direction: 'PURCHASE', companyId: billing.subsidiaryId })
+        expect(purchase.tiers).toMatchObject({ name: 'Lumen Holding', kind: 'SUPPLIER', auxiliaryAccountNumber: 'F00001' })
+        expect(cents(purchase.totalInclTax)).toBe(net * 1.2)
+        const pEntry = purchase.entry!
+        expect([pEntry.journal.code, pEntry.status]).toEqual(['AC', 'validated'])
+        expect(cents(byCode(pEntry.lines, '6226').debit)).toBe(net)
+        expect(cents(byCode(pEntry.lines, '44566').debit)).toBe(net / 5)
+        expect(purchase.payments).toHaveLength(1)
+        expect(purchase.payments[0].entryLine.account.code).toBe('401')
+        expect(purchase.payments[0].entryLine.letteringCode).toBe(byCode(pEntry.lines, '401').letteringCode)
       }
 
-      // Status as Kledg derives it: paid.
+      // Status as Kledg derives it: paid, on both sides.
       const { getInvoice } = await import('@/lib/invoices/manage-invoices.service')
       expect((await getInvoice(holding, billings[0].salesInvoiceId!)).status).toBe('paid')
-      expect((await getInvoice(holding, billings[billings.length - 1].salesInvoiceId!)).status).toBe('paid')
+      expect((await getInvoice(billings[1].subsidiaryId, billings[1].purchaseInvoiceId!)).status).toBe('paid')
     })
 
     it('leaves the months after the books to the visitor, who computes and invoices them through Kledg', async () => {
@@ -215,7 +239,7 @@ describe.skipIf(!available)('management features of the demo sandboxes', () => {
       )
       expect(preview.status).toBe(200)
       const computed = (await preview.json()) as { result: { totalExclTaxCents: number }; billed: unknown[] }
-      expect(computed.result.totalExclTaxCents).toBe(150000)
+      expect(computed.result.totalExclTaxCents).toBe(MANAGEMENT_FEE.totalNet * 100)
       expect(computed.billed).toEqual([])
 
       const generated = await call(
@@ -227,19 +251,183 @@ describe.skipIf(!available)('management features of the demo sandboxes', () => {
       )
       expect(generated.status).toBe(201)
       const { billings } = (await generated.json()) as { billings: Array<{ salesInvoice: { number: string } }> }
-      // The next number of the series is the one Atelier Lumen's transfer of that month refers to.
-      expect(billings[0].salesInvoice.number).toBe(lumenFeeInvoiceNumber(next.getUTCFullYear(), next.getUTCMonth() + 1))
-      const lumenTransfer = profileBySlug('atelier-lumen').engine.transactions(periodStart, periodEnd).find((t) => t.kind === 'management_fees')
-      if (lumenTransfer) expect(lumenTransfer.reference).toBe(billings[0].salesInvoice.number)
+      // The next numbers of the series are the ones the subsidiaries' transfers of that month refer to.
+      const year = next.getUTCFullYear()
+      const month = next.getUTCMonth() + 1
+      expect(billings.map((b) => b.salesInvoice.number)).toEqual(MANAGEMENT_FEE.subsidiaries.map((sub) => feeInvoiceNumber(year, month, sub.slug)))
+      for (const sub of MANAGEMENT_FEE.subsidiaries) {
+        const transfer = profileBySlug(sub.slug).engine.transactions(periodStart, periodEnd).find((t) => t.kind === 'management_fees')
+        if (transfer) expect(transfer.reference).toBe(feeInvoiceNumber(year, month, sub.slug))
+      }
     })
 
-    it('keeps the holding customer account lettered: no open 411 line on the validated months', async () => {
-      const holding = director.companies.get('lumen-holding')!
+    it('keeps the customer and supplier accounts lettered: no open 411 or 401 fee line on the validated months', async () => {
+      const ids = [...director.companies.values()]
       const open = await prisma.entryLine.count({
-        where: { account: { companyId: holding, code: '411' }, letteringCode: null, accountingEntry: { status: 'validated', fiscalYear: { year: 2025 } } },
+        where: {
+          account: { companyId: { in: ids }, code: { in: ['411', '401'] } },
+          letteringCode: null,
+          accountingEntry: { status: 'validated', fiscalYear: { year: 2025 }, journal: { code: { in: ['VE', 'AC'] } }, reference: { startsWith: 'LH-' } },
+        },
       })
       expect(open).toBe(0)
     })
+  })
+
+  describe('the Lumen group', () => {
+    const groupAccess = async (sandbox: Sandbox) => {
+      const { userGroupAccess } = await import('@/lib/management-fees/access')
+      return userGroupAccess({ id: sandbox.userId, email: sandbox.email, name: null, role: 'user' })
+    }
+    const fiscalYearOf = async (companyId: string, year: number) => (await prisma.fiscalYear.findFirstOrThrow({ where: { companyId, year } })).id
+
+    it('records the holding among the shareholders of its subsidiaries and its participation, at the right percentages', async () => {
+      const holding = director.companies.get('lumen-holding')!
+      for (const stake of GROUP_STAKES) {
+        const rows = await prisma.shareholder.findMany({ where: { companyId: director.companies.get(stake.slug), companyShareholderId: holding } })
+        expect(rows.map((r) => [Number(r.sharePercentage), r.numberOfShares, Number(r.capitalAmount)])).toEqual([[stake.percent, stake.shares, stake.capitalHeld]])
+      }
+      const company = await prisma.company.findUniqueOrThrow({ where: { id: holding } })
+      expect(Number(company.shareCapital)).toBe(240000)
+    })
+
+    it('gives the companies their fictional people: persons with a small photo, natural-person shareholders, officers', async () => {
+      const ids = [...director.companies.values()]
+      const persons = await prisma.person.findMany({ where: { companyId: { in: ids } }, include: { shareholders: true } })
+      expect(persons).toHaveLength(DEMO_PERSON_ROLES.length)
+      for (const person of persons) {
+        expect(person.photo).toMatch(/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/)
+        // Small: about 256 x 256 pixels, under 25 KB of image.
+        expect(person.photo!.length).toBeGreaterThan(5000)
+        expect(person.photo!.length).toBeLessThan(25_000 * 1.4)
+        expect(person.email).toMatch(/\.example$/)
+        expect(person.notes).toBeTruthy()
+      }
+      const slugOf = new Map([...director.companies.entries()].map(([slug, id]) => [id, slug]))
+      for (const role of DEMO_PERSON_ROLES) {
+        const [firstName] = role.person.split('-')
+        const person = persons.find((p) => slugOf.get(p.companyId!) === role.company && p.firstName.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase() === firstName)!
+        expect(person, `${role.person} in ${role.company}`).toBeTruthy()
+        if (role.shares) {
+          expect(person.shareholders).toHaveLength(1)
+          expect(person.shareholders[0]).toMatchObject({ companyId: person.companyId, type: 'PHYSICAL', numberOfShares: role.shares })
+        } else {
+          expect(person.shareholders).toHaveLength(0)
+        }
+      }
+      // The holding: 100 % natural persons; the SCI: 60 % Hélène Garnier, 40 % the holding.
+      const holdingRows = await prisma.shareholder.findMany({ where: { companyId: director.companies.get('lumen-holding') } })
+      expect(holdingRows.every((r) => r.type === 'PHYSICAL')).toBe(true)
+      expect(holdingRows.reduce((sum, r) => sum + Number(r.sharePercentage), 0)).toBe(100)
+      const sciRows = await prisma.shareholder.findMany({ where: { companyId: director.companies.get('sci-les-tilleuls') } })
+      expect(sciRows.reduce((sum, r) => sum + Number(r.sharePercentage), 0)).toBe(100)
+    })
+
+    it('records the other intragroup invoices on both sides: interest of the advance and the design job', async () => {
+      const verdier = director.companies.get('maison-verdier')!
+      const purchases = await prisma.invoice.findMany({ where: { companyId: verdier, direction: 'PURCHASE', NOT: { number: { startsWith: 'LH-' } } }, include: { tiers: true, payments: true }, orderBy: { issueDate: 'asc' } })
+      expect(purchases.map((i) => [i.number, i.tiers.name, cents(i.totalExclTax)])).toEqual([
+        [DESIGN_INVOICE.number, 'Atelier Lumen', DESIGN_INVOICE.net * 100],
+        ['CC-2025-001', 'Lumen Holding', Math.round(advanceInterest(2025) * 100)],
+      ])
+      // Both paid: the design job in October, the interest in January.
+      expect(purchases.map((i) => i.payments.length)).toEqual([1, 1])
+      const sale = await prisma.invoice.findFirstOrThrow({ where: { companyId: director.companies.get('atelier-lumen'), number: DESIGN_INVOICE.number }, include: { payments: true } })
+      expect(sale.direction).toBe('SALE')
+      // VAT on receipt: the payment carries the entry moving the VAT from 44574 to 44571.
+      expect(sale.payments[0].vatTransferEntryId).toBeTruthy()
+      expect(sale.buyerSiren).toBe((await prisma.company.findUniqueOrThrow({ where: { id: verdier } })).siren)
+    })
+
+    it('shows the 2025 group view: combined figures, every flow found on both sides, eliminations without gap', async () => {
+      const holding = director.companies.get('lumen-holding')!
+      const { getGroupView } = await import('@/lib/group/get-group-view.service')
+      const view = await getGroupView(holding, { fiscalYearId: await fiscalYearOf(holding, 2025) }, await groupAccess(director))
+      const id = (slug: string) => director.companies.get(slug)!
+      expect(view.unreachable).toEqual([])
+      const members = view.members.map((m) => [m.name, m.role, m.ownershipBp, m.samePeriod, m.figures !== null])
+      expect(members.sort((a, b) => String(a[0]).localeCompare(String(b[0])))).toEqual([
+        ['Atelier Lumen', 'subsidiary', 10000, true, true],
+        ['Lumen Holding', 'holding', null, true, true],
+        ['Maison Verdier', 'subsidiary', 10000, true, true],
+        ['SCI Les Tilleuls', 'subsidiary', 4000, true, true],
+      ])
+      expect(new Set(view.flows.map((f) => f.category))).toEqual(new Set(['management_fee', 'invoice', 'dividend', 'current_account', 'trade']))
+
+      // Operations: both books agree.
+      const pair = (seller: string, buyer: string) => view.eliminations.operations.find((p) => p.sellerId === id(seller) && p.buyerId === id(buyer))!
+      const fees = (slug: string) => 12 * feeSubsidiary(slug).net * 100
+      expect(pair('lumen-holding', 'atelier-lumen')).toMatchObject({ revenueCents: fees('atelier-lumen'), chargeCents: fees('atelier-lumen'), gapCents: 0 })
+      const toVerdier = fees('maison-verdier') + Math.round(advanceInterest(2025) * 100)
+      expect(pair('lumen-holding', 'maison-verdier')).toMatchObject({ revenueCents: toVerdier, chargeCents: toVerdier, gapCents: 0 })
+      expect(pair('lumen-holding', 'maison-verdier').categories.sort()).toEqual(['invoice', 'management_fee'])
+      expect(pair('atelier-lumen', 'maison-verdier')).toMatchObject({ revenueCents: DESIGN_INVOICE.net * 100, gapCents: 0, categories: ['invoice'] })
+      // Dividends of Atelier Lumen, out of the combined result.
+      expect(view.eliminations.dividends).toEqual([{ receiverId: id('lumen-holding'), payerId: id('atelier-lumen'), cents: lumenDividend(2025).amount * 100 }])
+      // Balances: the advance (451100 / 455100) and the interest invoice still open (411 / 401).
+      const balances = view.eliminations.balances
+      expect(balances).toHaveLength(1)
+      const open = (VERDIER_ADVANCE.amount + advanceInterest(2025)) * 100
+      expect(balances[0]).toMatchObject({ creditorId: id('lumen-holding'), debtorId: id('maison-verdier'), receivableCents: Math.round(open), payableCents: Math.round(open), gapCents: 0 })
+      expect(balances[0].categories.sort()).toEqual(['current_account', 'trade'])
+
+      const operations = (fees('atelier-lumen') + fees('maison-verdier') + DESIGN_INVOICE.net * 100)
+      expect(view.eliminations.effect.chiffreAffairesCents).toBe(-operations)
+      expect(view.eliminations.effect.resultatCents).toBe(-lumenDividend(2025).amount * 100)
+      expect(view.afterEliminations.totalBilanCents).toBe(view.combined.totalBilanCents - Math.round(open))
+      expect(view.titresParticipationCents).toBe(240000 * 100)
+      expect(view.warnings.some((w) => w.includes('écart') || w.includes('pas enregistré'))).toBe(false)
+    })
+
+    it('shows the 2026 group view without gap either', async () => {
+      const holding = director.companies.get('lumen-holding')!
+      const { getGroupView } = await import('@/lib/group/get-group-view.service')
+      const view = await getGroupView(holding, { fiscalYearId: await fiscalYearOf(holding, 2026) }, await groupAccess(director))
+      expect(view.members).toHaveLength(4)
+      expect(view.eliminations.operations.length).toBeGreaterThanOrEqual(2)
+      for (const p of view.eliminations.operations) expect(p.gapCents).toBe(0)
+      for (const b of view.eliminations.balances) expect(b.gapCents).toBe(0)
+      expect(view.eliminations.dividends.map((d) => d.cents)).toEqual([lumenDividend(2026).amount * 100])
+    })
+
+    it('lists the participations: categories, titres, quote-part, advances and dividends', async () => {
+      const holding = director.companies.get('lumen-holding')!
+      const { getParticipations } = await import('@/lib/group/get-participations.service')
+      const report = await getParticipations(holding, { fiscalYearId: await fiscalYearOf(holding, 2025) }, await groupAccess(director))
+      expect(report.unattributed).toEqual([])
+      expect(report.unreachable).toEqual([])
+      const row = (name: string) => report.rows.find((r) => r.name === name)!
+      expect(row('Atelier Lumen')).toMatchObject({ kind: 'filiale', ownershipBp: 10000, numberOfShares: 100, bookValueGrossCents: 12000000, bookValueNetCents: 12000000, dividendsCents: 1500000, loansCents: 0 })
+      expect(row('Maison Verdier')).toMatchObject({ kind: 'filiale', ownershipBp: 10000, numberOfShares: 500, bookValueGrossCents: 8400000, loansCents: VERDIER_ADVANCE.amount * 100, dividendsCents: 0 })
+      expect(row('SCI Les Tilleuls')).toMatchObject({ kind: 'participation', ownershipBp: 4000, numberOfShares: 40, bookValueGrossCents: 3600000 })
+      for (const r of report.rows) {
+        expect(r.samePeriod).toBe(true)
+        expect(r.capitauxPropresCents).not.toBeNull()
+        expect(r.quotePartCents).toBe(Math.round((r.capitauxPropresCents! * r.ownershipBp) / 10000))
+      }
+      expect(row('Atelier Lumen').capitalCents).toBe(100000)
+      expect(row('Maison Verdier').capitalCents).toBe(500000)
+      expect(report.totals.bookValueGrossCents).toBe(24000000)
+    })
+
+    it('works for the admin persona, with the fictional managers as fellow members', async () => {
+      admin = await provision('admin', '198.51.100.43')
+      const holding = admin.companies.get('lumen-holding')!
+      const { getGroupView } = await import('@/lib/group/get-group-view.service')
+      const view = await getGroupView(holding, { fiscalYearId: await fiscalYearOf(holding, 2025) }, await groupAccess(admin))
+      expect(view.unreachable).toEqual([])
+      expect(view.members).toHaveLength(4)
+      for (const p of view.eliminations.operations) expect(p.gapCents).toBe(0)
+      for (const b of view.eliminations.balances) expect(b.gapCents).toBe(0)
+      const { getParticipations } = await import('@/lib/group/get-participations.service')
+      const report = await getParticipations(holding, { fiscalYearId: await fiscalYearOf(holding, 2025) }, await groupAccess(admin))
+      expect(report.rows.map((r) => r.kind).sort()).toEqual(['filiale', 'filiale', 'participation'])
+      const { deleteSandboxes } = await import('../sandbox/service')
+      const ids = [...admin.companies.values()]
+      await deleteSandboxes([{ id: admin.userId, email: admin.email }])
+      // The fictional people go with the companies.
+      expect(await prisma.person.count({ where: { companyId: { in: ids } } })).toBe(0)
+    }, 120_000)
   })
 
   describe('budgets', () => {
@@ -274,7 +462,7 @@ describe.skipIf(!available)('management features of the demo sandboxes', () => {
       const line = (prefix: string) => detail.lines.find((l) => l.accountPrefix === prefix)!
       // Recurring commitments: rent, management fees, payroll over twelve months.
       expect(line('6132').annualCents).toBe(12 * 125000)
-      expect(line('6226').annualCents).toBe(12 * LUMEN_MANAGEMENT_FEE.net * 100)
+      expect(line('6226').annualCents).toBe(12 * feeSubsidiary('atelier-lumen').net * 100)
       expect(line('64').annualCents).toBe(12 * 572000)
       // Sales planned 8 % above 2025.
       const sales2025 = profileBySlug('atelier-lumen').engine.summary(2025).revenue
@@ -369,11 +557,11 @@ describe.skipIf(!available)('management features of the demo sandboxes', () => {
       const claimant = await prisma.expenseClaimant.findFirstOrThrow({ where: { companyId: lumen }, include: { user: true } })
       expect(claimant.user?.name).toBe('Claire Vasseur')
       expect(claimant.userId).not.toBe(accountant.userId)
-      expect(await prisma.managementFeeBilling.count({ where: { companyId: holding } })).toBe(bookedMonths(cutoffOf(new Date())).length)
+      expect(await prisma.managementFeeBilling.count({ where: { companyId: holding } })).toBe(2 * bookedMonths(cutoffOf(new Date())).length)
       expect(await prisma.budget.count({ where: { companyId: { in: [...accountant.companies.values()] } } })).toBe(2)
 
       // The transfer of the last booked month is a draft for the accountant: its invoice waits for the payment.
-      const lastNumber = lumenFeeInvoiceNumber(2026, Number(cutoffOf(new Date()).slice(5, 7)))
+      const lastNumber = feeInvoiceNumber(2026, Number(cutoffOf(new Date()).slice(5, 7)), 'atelier-lumen')
       const last = await prisma.invoice.findFirstOrThrow({ where: { companyId: holding, number: lastNumber }, include: { payments: true } })
       expect(last.payments).toHaveLength(0)
 
@@ -382,6 +570,25 @@ describe.skipIf(!available)('management features of the demo sandboxes', () => {
       const response = await call(() => import('@/app/api/expense-reports/[id]/workflow/route'), 'POST', `/api/expense-reports/${submitted.id}/workflow`, { id: submitted.id }, { action: 'validate' })
       expect(response.status).toBe(200)
       expect((await prisma.expenseReport.findUniqueOrThrow({ where: { id: submitted.id } })).status).toBe('VALIDATED')
+    })
+
+    it('shows the group view of the holding\'s 2025, still open, to the accountant: same flows, no gap', async () => {
+      const holding = accountant.companies.get('lumen-holding')!
+      const fy2025 = await prisma.fiscalYear.findFirstOrThrow({ where: { companyId: holding, year: 2025 } })
+      expect(fy2025.isClosed).toBe(false)
+      const { userGroupAccess } = await import('@/lib/management-fees/access')
+      const access = userGroupAccess({ id: accountant.userId, email: accountant.email, name: null, role: 'user' })
+      const { getGroupView } = await import('@/lib/group/get-group-view.service')
+      const view = await getGroupView(holding, { fiscalYearId: fy2025.id }, access)
+      expect(view.unreachable).toEqual([])
+      expect(view.members).toHaveLength(4)
+      expect(view.eliminations.operations).toHaveLength(3)
+      for (const p of view.eliminations.operations) expect(p.gapCents).toBe(0)
+      for (const b of view.eliminations.balances) expect(b.gapCents).toBe(0)
+      const { getParticipations } = await import('@/lib/group/get-participations.service')
+      const report = await getParticipations(holding, { fiscalYearId: fy2025.id }, access)
+      expect(report.rows).toHaveLength(3)
+      expect(report.unattributed).toEqual([])
     })
   })
 

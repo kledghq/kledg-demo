@@ -208,6 +208,9 @@ export async function deleteCompaniesInTx(tx: Prisma.TransactionClient, companyI
       owned.flatMap((c) => [c.addressId, c.headquartersAddressId, ...c.establishments.map((e) => e.addressId)]).filter((id): id is string => !!id),
     ),
   ]
+  // Persons only reference their company (no cascade): the demo's fictional
+  // shareholders and officers go with it (their shareholder rows cascade).
+  await tx.person.deleteMany({ where: { companyId: { in: companyIds } } })
   await tx.company.deleteMany({ where: { id: { in: companyIds } } })
   if (addressIds.length > 0) {
     await tx.address.deleteMany({

@@ -5,7 +5,9 @@
  * - Atelier Lumen (SASU, design studio),
  * - Maison Verdier (EURL, online delicatessen),
  * - SCI Les Tilleuls (SCI at IS, residential building),
- * - Lumen Holding (SAS, owns Atelier Lumen).
+ * - Lumen Holding (SAS, owns Atelier Lumen and Maison Verdier and 40% of
+ *   SCI Les Tilleuls: the group of lib/demo/qonto/profiles/group.ts, with
+ *   its fictional shareholders and officers, lib/demo/people).
  * For each one:
  * - fiscal year 2025, fully booked from the generated bank activity and
  *   closed with the app's closing service,
@@ -76,17 +78,18 @@ import {
   type LedgerEntry,
 } from '@/lib/demo/qonto/engine'
 import { DEMO_API_HISTORY_DAYS, profileBySlug, type DemoBankProfile } from '@/lib/demo/qonto/profiles'
-import { HOLDING_SLUG } from '@/lib/demo/qonto/profiles/lumen-holding'
+import { GROUP_STAKES, HOLDING_SLUG } from '@/lib/demo/qonto/profiles/group'
+import { DEMO_PERSON_ROLES, demoPerson, demoPersonEmail, demoPersonNotes, demoPersonPhoto } from '@/lib/demo/people'
 import { DIRECTOR_REIMBURSEMENT } from '@/lib/demo/expense-reports'
 import { DEMO_BUDGETS, planBudget2026 } from '@/lib/demo/budgets'
 import {
-  letterBookedFees,
+  collectGroupBookings,
   seedBudgets,
   seedDirectorExpenseReports,
-  seedManagementFees,
-  type BookedFeeMonth,
+  seedGroupInvoices,
   type ExpenseReportSeedResult,
-  type ManagementFeeSeedResult,
+  type GroupBooking,
+  type GroupSeedResult,
 } from '@/lib/demo/seed-features'
 
 export interface DemoCompanySeedResult {
@@ -124,7 +127,8 @@ export interface DemoCompaniesSeedResult {
   companies: DemoCompanySeedResult[]
   /** Management features seeded on top of the books (lib/demo/seed-features.ts). */
   features: {
-    managementFees: ManagementFeeSeedResult | null
+    /** Intragroup invoices on both sides, the management fee convention and its billings. */
+    group: GroupSeedResult | null
     expenseReports: ExpenseReportSeedResult | null
     /** Companies with a 2026 budget. */
     budgets: number
@@ -216,7 +220,12 @@ function withParents(codes: Iterable<string>): Set<string> {
  * The PCG chart of a fiscal year: every account, or only `codes` (with
  * their parents) for a closed year whose books are already complete.
  */
-function chartOfAccounts(companyId: string, fiscalYearId: string, codes?: Set<string>): {
+function chartOfAccounts(
+  companyId: string,
+  fiscalYearId: string,
+  codes?: Set<string>,
+  subAccounts: ReadonlyArray<{ code: string; label: string }> = [],
+): {
   rows: Prisma.AccountCreateManyInput[]
   ids: Map<string, string>
 } {
@@ -235,6 +244,17 @@ function chartOfAccounts(companyId: string, fiscalYearId: string, codes?: Set<st
       parentId: account.parentCode ? ids.get(account.parentCode) ?? null : null,
       isPCG: true,
     })
+  }
+  // Subdivisions of the PCG (PCG art. 932-1), under their longest PCG prefix,
+  // with the parent's nomenclature like createAccount (create-account.service.ts).
+  for (const sub of subAccounts) {
+    let parent = sub.code.slice(0, -1)
+    while (parent.length > 1 && !ids.has(parent)) parent = parent.slice(0, -1)
+    const parentId = ids.get(parent)
+    if (!parentId) throw new Error(`Demo seed: no parent account for ${sub.code}`)
+    const id = createId()
+    ids.set(sub.code, id)
+    rows.push({ id, code: sub.code, label: sub.label, companyId, fiscalYearId, parentId, isPCG: true })
   }
   return { rows, ids }
 }
@@ -541,20 +561,58 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
       { companyId: id, regimeType: 'corporateTax', regime: c.corporateTaxRegime, startDate: parseDateKey(c.foundationDate) },
     ]),
   })
-  const holding = plans.find((p) => p.company.isHolding)
-  const subsidiary = plans.find((p) => p.company.profile === 'atelier-lumen')
-  if (holding && subsidiary) {
-    await prisma.shareholder.create({
-      data: {
-        companyId: subsidiary.id,
+  // The group: Lumen Holding among the shareholders of the companies it
+  // holds (Kledg's definition of a holding, lib/management-fees/holding.ts),
+  // then the fictional people, each a Person of the company they belong to,
+  // a natural-person shareholder where they hold shares.
+  const planOf = (slug: string) => plans.find((p) => p.profile.engine.slug === slug)
+  const holding = planOf(HOLDING_SLUG)
+  const shareholderRows: Prisma.ShareholderCreateManyInput[] = []
+  if (holding) {
+    for (const stake of GROUP_STAKES) {
+      const held = planOf(stake.slug)
+      if (!held) continue
+      shareholderRows.push({
+        companyId: held.id,
         type: 'LEGAL',
         companyShareholderId: holding.id,
-        sharePercentage: 100,
-        numberOfShares: subsidiary.company.totalShares,
-        capitalAmount: subsidiary.company.totalShares * subsidiary.company.shareNominalValue,
-      },
-    })
+        sharePercentage: stake.percent,
+        numberOfShares: stake.shares,
+        capitalAmount: stake.shares * held.company.shareNominalValue,
+      })
+    }
   }
+  const personRows: Prisma.PersonCreateManyInput[] = []
+  for (const role of DEMO_PERSON_ROLES) {
+    const plan = planOf(role.company)
+    if (!plan) continue
+    const person = demoPerson(role.person)
+    const personId = createId()
+    personRows.push({
+      id: personId,
+      companyId: plan.id,
+      firstName: person.firstName,
+      name: person.name,
+      email: demoPersonEmail(person, plan.company.email),
+      photo: demoPersonPhoto(person.key),
+      birthDate: parseDateKey(person.birthDate),
+      birthCity: person.birthCity,
+      birthDepartment: person.birthDepartment,
+      notes: demoPersonNotes(role),
+    })
+    if (role.shares) {
+      shareholderRows.push({
+        companyId: plan.id,
+        type: 'PHYSICAL',
+        personId,
+        sharePercentage: round2((role.shares / plan.company.totalShares) * 100),
+        numberOfShares: role.shares,
+        capitalAmount: role.shares * plan.company.shareNominalValue,
+      })
+    }
+  }
+  if (personRows.length > 0) await prisma.person.createMany({ data: personRows })
+  if (shareholderRows.length > 0) await prisma.shareholder.createMany({ data: shareholderRows })
 
   // Fiscal years 2025 and 2026, with the full PCG in both (the closing
   // copies 2025 accounts to 2026 and skips those that already exist).
@@ -571,9 +629,12 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
   log('Creating the charts of accounts')
   const accountRows: Prisma.AccountCreateManyInput[] = []
   for (const plan of plans) {
-    const used2025 = withParents(plan.profile.engine.ledger(2025).flatMap((e) => e.lines.map((l) => l.account)))
-    const chart2025 = chartOfAccounts(plan.id, plan.fy2025, used2025)
-    const chart2026 = chartOfAccounts(plan.id, plan.fy2026)
+    const subAccounts = plan.profile.engine.spec.subAccounts ?? []
+    // A sub-account's parent: its longest PCG prefix.
+    const parentsOfSubAccounts = subAccounts.flatMap((a) => [...Array(a.code.length).keys()].map((n) => a.code.slice(0, n)))
+    const used2025 = withParents([...plan.profile.engine.ledger(2025).flatMap((e) => e.lines.map((l) => l.account)), ...parentsOfSubAccounts])
+    const chart2025 = chartOfAccounts(plan.id, plan.fy2025, used2025, subAccounts)
+    const chart2026 = chartOfAccounts(plan.id, plan.fy2026, undefined, subAccounts)
     plan.accounts2025 = chart2025.ids
     plan.accounts2026 = chart2026.ids
     accountRows.push(...chart2025.rows, ...chart2026.rows)
@@ -586,18 +647,18 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
   const rows2025 = plans.map((plan) =>
     ledgerRows({ id: plan.id, name: plan.company.name }, plan.fy2025, plan.accounts2025, plan.journals, plan.profile.engine.ledger(2025), 1)
   )
-  // The holding's management fee invoices, lettered with their payments
+  // The intragroup invoices of each company, lettered with their payments
   // (before insertion: lettering stays free on validated entries anyway).
   const holdingIndex = plans.findIndex((p) => p.profile.engine.slug === HOLDING_SLUG)
   const holdingPlan = plans[holdingIndex]
-  const bookedFees: BookedFeeMonth[] = []
-  const letterFees = (year: number, rows: LedgerRows, accounts: Map<string, string>, to: string) => {
-    if (!holdingPlan) return
-    const customerAccount = accounts.get('411')
-    if (!customerAccount) return
-    bookedFees.push(...letterBookedFees(year, rows, customerAccount, holdingPlan.profile.engine.transactions(`${year}-01-01`, to)))
+  const groupBookings = new Map<string, GroupBooking>()
+  const collectGroup = (year: number, rows: LedgerRows[], to: string) => {
+    plans.forEach((plan, index) => {
+      const accounts = year === 2025 ? plan.accounts2025 : plan.accounts2026
+      collectGroupBookings(year, plan.profile.engine.slug, rows[index], accounts, plan.profile.engine.transactions(`${year}-01-01`, to), groupBookings)
+    })
   }
-  if (holdingPlan) letterFees(2025, rows2025[holdingIndex], holdingPlan.accounts2025, '2025-12-31')
+  collectGroup(2025, rows2025, '2025-12-31')
   await insertLedger({
     entries: rows2025.flatMap((r) => r.entries),
     drafts: new Set(),
@@ -654,7 +715,7 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
     plan.result.drafts2026 = rows.drafts.size
     return rows
   })
-  if (holdingPlan) letterFees(2026, rows2026[holdingIndex], holdingPlan.accounts2026, cutoff)
+  collectGroup(2026, rows2026, cutoff)
   await insertLedger({
     entries: rows2026.flatMap((r) => r.entries),
     drafts: new Set(rows2026.flatMap((r) => [...r.drafts])),
@@ -832,21 +893,21 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
   const party = (plan: CompanyPlan) => {
     const vatKey = (12 + 3 * (Number(plan.company.siren) % 97)) % 97
     return {
+      slug: plan.profile.engine.slug,
       id: plan.id,
       name: plan.company.name,
       siren: plan.company.siren,
       vatNumber: plan.company.isVatExempt ? null : `FR${String(vatKey).padStart(2, '0')}${plan.company.siren}`,
     }
   }
-  let managementFees: ManagementFeeSeedResult | null = null
+  let group: GroupSeedResult | null = null
   if (holdingPlan && lumenPlan) {
-    log('Management fee convention and invoices')
-    managementFees = await seedManagementFees({
-      holding: party(holdingPlan),
-      subsidiary: party(lumenPlan),
+    log('Intragroup invoices and management fees')
+    group = await seedGroupInvoices({
+      parties: new Map(plans.map((plan) => [plan.profile.engine.slug, party(plan)])),
+      bookings: groupBookings,
       userId: user.id,
       createdById: claireId ?? user.id,
-      booked: bookedFees,
     })
   }
 
@@ -880,6 +941,6 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
   return {
     ledgerCutoff: cutoff,
     companies: plans.map((plan) => ({ companyId: plan.id, ...plan.result }) as DemoCompanySeedResult),
-    features: { managementFees, expenseReports, budgets: budgets.length },
+    features: { group, expenseReports, budgets: budgets.length },
   }
 }

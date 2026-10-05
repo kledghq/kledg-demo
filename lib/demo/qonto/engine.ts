@@ -106,7 +106,7 @@ export interface Draft {
 
 /** Accounting entry booked outside the bank journal, or the opening entry. */
 export interface LedgerEntry {
-  journal: 'AN' | 'BQ' | 'OD' | 'VE'
+  journal: 'AN' | 'AC' | 'BQ' | 'OD' | 'VE'
   date: string
   description: string
   reference: string
@@ -181,6 +181,11 @@ export interface ProfileSpec {
   periodEntries?: (year: number, previous: FiscalYearSummary | null) => LedgerEntry[]
   /** Amount deducted from the accounting result to get the taxable income (e.g. parent-subsidiary regime). */
   taxDeduction?: (year: number) => number
+  /**
+   * Sub-accounts the company adds to the PCG (PCG art. 932-1), e.g. a
+   * current account named after the company of the group it is with.
+   */
+  subAccounts?: ReadonlyArray<{ code: string; label: string }>
 }
 
 export interface MonthlyVat {

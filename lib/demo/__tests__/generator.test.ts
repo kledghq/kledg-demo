@@ -10,16 +10,32 @@ import {
   type LedgerEntry,
 } from '../qonto/engine'
 import { DEMO_PROFILES, profileBySlug } from '../qonto/profiles'
-import { LUMEN_MANAGEMENT_FEE, isValidIban, lumenDividend, lumenFeeInvoiceDate, lumenFeeInvoiceNumber } from '../qonto/profiles/shared'
+import { isValidIban, lumenDividend } from '../qonto/profiles/shared'
+import {
+  DESIGN_INVOICE,
+  GROUP_STAKES,
+  HOLDING_CAPITAL,
+  MANAGEMENT_FEE,
+  VERDIER_ADVANCE,
+  advanceInterest,
+  feeInvoiceDate,
+  feeInvoiceNumber,
+  feeSubsidiary,
+  grossOf,
+  groupAux,
+  groupInvoices,
+  interestInvoice,
+} from '../qonto/profiles/group'
 import { LUMEN_PAYROLL } from '../qonto/profiles/atelier-lumen'
-import { VERDIER_STOCK, VERDIER_TNS_CONTRIBUTIONS } from '../qonto/profiles/maison-verdier'
+import { VERDIER_STOCK } from '../qonto/profiles/maison-verdier'
 import {
   TILLEULS_CONSTRUCTION,
   TILLEULS_LOAN,
   tilleulsInstalment,
   tilleulsLoanTable,
 } from '../qonto/profiles/sci-les-tilleuls'
-import { HOLDING_PARTICIPATION } from '../qonto/profiles/lumen-holding'
+import { DEMO_COMPANIES } from '../companies'
+import { DEMO_PERSON_ROLES, DEMO_PEOPLE } from '../people'
 import { DIRECTOR_REIMBURSEMENT, REIMBURSED_REPORT, demoReportTotals, draftReport, submittedReport } from '../expense-reports'
 import { DEMO_BUDGETS, planBudget2026 } from '../budgets'
 
@@ -202,13 +218,10 @@ describe('Maison Verdier', () => {
     expect(txs.some((t) => t.account === '607' && t.vatRate === 5.5)).toBe(true)
   })
 
-  it('charges the TNS contributions of the manager to 646 and pays no salary', () => {
-    const tns = txs.filter((t) => t.account === '646')
-    expect(tns.length).toBeGreaterThanOrEqual(21)
-    for (const t of tns) expect(t.amount).toBe(VERDIER_TNS_CONTRIBUTIONS)
+  it('pays no salary and no social contributions: its gérant is unpaid, its sole partner the holding', () => {
+    expect(txs.some((t) => t.kind === 'urssaf' || t.kind === 'salary')).toBe(false)
     const ledger = verdier.ledger(2025)
-    expect(ledger.flatMap((e) => e.lines).some((l) => /^64[1-5]/.test(l.account) || l.account === '421')).toBe(false)
-    expect(accountBalance(ledger, (c) => c === '646')).toBe(12 * VERDIER_TNS_CONTRIBUTIONS)
+    expect(ledger.flatMap((e) => e.lines).some((l) => /^64/.test(l.account) || l.account === '421' || l.account === '431')).toBe(false)
   })
 
   it('books the stock variation at closing', () => {
@@ -262,67 +275,148 @@ describe('SCI Les Tilleuls', () => {
   })
 })
 
-describe('Lumen Holding and Atelier Lumen books agree', () => {
-  const lumenTxs = range('atelier-lumen')
-  const holdingTxs = range('lumen-holding')
+const ENGINES: Record<string, typeof holding> = { 'lumen-holding': holding, 'atelier-lumen': lumen, 'maison-verdier': verdier, 'sci-les-tilleuls': tilleuls }
 
-  it('receives the management fees Atelier Lumen pays, same day and amount', () => {
-    const paid = lumenTxs.filter((t) => t.kind === 'management_fees')
-    const received = holdingTxs.filter((t) => t.kind === 'management_fees')
-    expect(paid.length).toBeGreaterThan(12)
-    expect(received.map((t) => [t.date, t.amount])).toEqual(paid.map((t) => [t.date, t.amount]))
-    for (const t of paid) expect(t.amount).toBe(round2(LUMEN_MANAGEMENT_FEE.net * 1.2))
-    // Each transfer settles the customer account (the invoice carries the revenue and the VAT, on debits).
-    const aux = { number: LUMEN_MANAGEMENT_FEE.customerAux, label: LUMEN_MANAGEMENT_FEE.customerName }
-    for (const t of received) {
-      expect(t.booking).toEqual([{ account: '411', credit: t.amount, auxiliary: aux }])
-      expect(t.vatAccount).toBeNull()
-      const month = Number(t.date.slice(5, 7))
-      expect(t.reference).toBe(lumenFeeInvoiceNumber(Number(t.date.slice(0, 4)), month))
-      expect(paid.find((p) => p.date === t.date)?.reference).toBe(t.reference)
+describe('the Lumen group', () => {
+  const company = (slug: string) => DEMO_COMPANIES.find((c) => c.profile === slug)!
+
+  it('records stakes consistent with the capital of each company and the titres of the holding', () => {
+    const holdingCompany = company('lumen-holding')
+    expect(holdingCompany.totalShares * holdingCompany.shareNominalValue).toBe(HOLDING_CAPITAL)
+    for (const stake of GROUP_STAKES) {
+      const held = company(stake.slug)
+      expect(stake.shares).toBe((held.totalShares * stake.percent) / 100)
+      expect(stake.capitalHeld).toBe(stake.shares * held.shareNominalValue)
+      // The titres, one sub-account named after the company, at their contribution value.
+      expect(accountBalance(holding.ledger(2025), (c) => c === stake.titres.account)).toBe(stake.titres.amount)
+      expect(stake.titres.label).toContain(held.name.replace(/^SCI /, ''))
+    }
+    expect(accountBalance(holding.ledger(2025), (c) => c.startsWith('261'))).toBe(HOLDING_CAPITAL)
+    // Two filiales and one participation (Code de commerce art. L233-1 and L233-2).
+    expect(GROUP_STAKES.map((s) => s.percent > 50)).toEqual([true, true, false])
+  })
+
+  it('is owned by natural persons whose shares add up to the capital', () => {
+    for (const slug of ['lumen-holding', 'sci-les-tilleuls']) {
+      const held = DEMO_PERSON_ROLES.filter((r) => r.company === slug).reduce((sum, r) => sum + (r.shares ?? 0), 0)
+      const byHolding = GROUP_STAKES.find((s) => s.slug === slug)?.shares ?? 0
+      expect(held + byHolding).toBe(company(slug).totalShares)
+    }
+    // At least 75 % held by natural persons: the reduced corporate tax rate stays open (CGI art. 219, I, b).
+    expect(DEMO_PERSON_ROLES.filter((r) => r.company === 'lumen-holding').every((r) => DEMO_PEOPLE.some((p) => p.key === r.person))).toBe(true)
+    // Every company has its officer.
+    for (const c of DEMO_COMPANIES) expect(DEMO_PERSON_ROLES.some((r) => r.company === c.profile && r.office), c.name).toBe(true)
+  })
+
+  it('books every intragroup invoice on both sides, same number, date and amounts', () => {
+    for (const year of [2025, 2026]) {
+      const invoices = groupInvoices(year)
+      expect(invoices.filter((i) => i.kind === 'management_fee')).toHaveLength(24)
+      for (const invoice of invoices) {
+        const sale = ENGINES[invoice.seller].ledger(year).find((e) => e.reference === invoice.number)!
+        const purchase = ENGINES[invoice.buyer].ledger(year).find((e) => e.reference === invoice.number)!
+        expect([sale.journal, purchase.journal]).toEqual(['VE', 'AC'])
+        expect(sale.date).toBe(invoice.issueDate)
+        expect(purchase.date).toBe(invoice.issueDate)
+        expect(sale.lines[0]).toMatchObject({ account: '411', debit: grossOf(invoice), auxiliary: groupAux(invoice.seller, invoice.buyer) })
+        expect(purchase.lines[0]).toMatchObject({ account: '401', credit: grossOf(invoice), auxiliary: groupAux(invoice.buyer, invoice.seller) })
+        expect(sale.lines.find((l) => l.account === invoice.sellerAccount)?.credit).toBe(invoice.net)
+        expect(purchase.lines.find((l) => l.account === invoice.buyerAccount)?.debit).toBe(invoice.net)
+      }
     }
   })
 
-  it('invoices the management fees on the first day of each month (VE, 411 / 706 / 44571, VAT on debits)', () => {
+  it('settles every invoice by one transfer on both sides, same day and amount', () => {
+    for (const invoice of [...groupInvoices(2025), ...groupInvoices(2026)].filter((i) => i.paymentDate <= TO)) {
+      const received = range(invoice.seller).find((t) => t.reference === invoice.number && t.side === 'credit')!
+      const paid = range(invoice.buyer).find((t) => t.reference === invoice.number && t.side === 'debit')!
+      expect(received, invoice.number).toMatchObject({ date: invoice.paymentDate, amount: grossOf(invoice), vatAccount: null })
+      expect(paid, invoice.number).toMatchObject({ date: invoice.paymentDate, amount: grossOf(invoice), vatAccount: null })
+      expect(received.booking).toEqual([{ account: '411', credit: grossOf(invoice), auxiliary: groupAux(invoice.seller, invoice.buyer) }])
+      expect(paid.booking).toEqual([{ account: '401', debit: grossOf(invoice), auxiliary: groupAux(invoice.buyer, invoice.seller) }])
+    }
+  })
+
+  it('invoices the management fees of the convention on the first day of each month, split 60 / 40, numbered in order', () => {
+    expect(MANAGEMENT_FEE.subsidiaries.reduce((sum, s) => sum + s.net, 0)).toBe(MANAGEMENT_FEE.totalNet)
+    expect(MANAGEMENT_FEE.subsidiaries.reduce((sum, s) => sum + s.sharePercentBp, 0)).toBe(10000)
+    for (const sub of MANAGEMENT_FEE.subsidiaries) expect(sub.net * 10000).toBe(MANAGEMENT_FEE.totalNet * sub.sharePercentBp)
     for (const year of [2025, 2026]) {
-      const invoices = holding.ledger(year).filter((e) => e.journal === 'VE')
-      expect(invoices.map((e) => e.reference)).toEqual(Array.from({ length: 12 }, (_, i) => lumenFeeInvoiceNumber(year, i + 1)))
-      for (const [i, entry] of invoices.entries()) {
-        expect(entry.date).toBe(lumenFeeInvoiceDate(year, i + 1))
+      const sales = holding.ledger(year).filter((e) => e.journal === 'VE' && e.reference.startsWith('LH-'))
+      expect(sales.map((e) => e.reference)).toEqual(Array.from({ length: 24 }, (_, i) => `LH-${year}-${String(i + 1).padStart(3, '0')}`))
+      expect(sales[1].reference).toBe(feeInvoiceNumber(year, 1, 'maison-verdier'))
+      for (const [i, entry] of sales.entries()) {
+        const month = Math.floor(i / 2) + 1
+        const net = MANAGEMENT_FEE.subsidiaries[i % 2].net
+        expect(entry.date).toBe(feeInvoiceDate(year, month))
         expect(entry.lines.map((l) => [l.account, l.debit ?? 0, l.credit ?? 0])).toEqual([
-          ['411', 1800, 0],
-          ['706', 0, LUMEN_MANAGEMENT_FEE.net],
-          ['44571', 0, 300],
+          ['411', round2(net * 1.2), 0],
+          ['706', 0, net],
+          ['44571', 0, round2(net * 0.2)],
         ])
       }
-      // Every invoice of the year is settled: the customer account is cleared.
-      expect(accountBalance(holding.ledger(year), (c) => c === '411')).toBe(0)
-      // The VAT of the invoices is collected in their month (CA3).
-      expect(holding.monthlyVat(year, 3).collected).toBe(300)
+      // Only the year's interest invoice, paid in January, is open at the year end (the
+      // year before's comes with the opening entries of the closing, not in the generated ledger).
+      expect(accountBalance(holding.ledger(year), (c) => c === '411')).toBe(round2(advanceInterest(year) - advanceInterest(year - 1)))
+      // The VAT of the invoices is collected in their month (CA3, VAT on debits).
+      expect(holding.monthlyVat(year, 3).collected).toBe(500)
     }
-    expect(holding.summary(2025).revenue).toBe(12 * LUMEN_MANAGEMENT_FEE.net)
+    expect(holding.summary(2025).revenue).toBe(12 * MANAGEMENT_FEE.totalNet)
+  })
+
+  it('lends Maison Verdier 15,000 EUR in current account, both sides named after the other company, with interest at 4 %', () => {
+    expect(accountBalance(holding.ledger(2025), (c) => c === VERDIER_ADVANCE.holdingAccount.code)).toBe(VERDIER_ADVANCE.amount)
+    expect(accountBalance(verdier.ledger(2025), (c) => c === VERDIER_ADVANCE.subsidiaryAccount.code)).toBe(-VERDIER_ADVANCE.amount)
+    expect(VERDIER_ADVANCE.holdingAccount.label).toContain('Maison Verdier')
+    expect(VERDIER_ADVANCE.subsidiaryAccount.label).toContain('Lumen Holding')
+    // 1 July to 31 December 2025: 184 days at 4 % on 365 days; then a full year.
+    expect(advanceInterest(2025)).toBe(round2((15000 * 0.04 * 184) / 365))
+    expect(advanceInterest(2026)).toBe(600)
+    const interest = interestInvoice(2025)!
+    expect(interest).toMatchObject({ vatRate: 0, sellerAccount: '7638', buyerAccount: '6615', issueDate: '2025-12-31' })
+    expect(interest.paymentDate.startsWith('2026-01-')).toBe(true)
+    expect(accountBalance(verdier.ledger(2025), (c) => c === '6615')).toBe(advanceInterest(2025))
+    expect(accountBalance(verdier.ledger(2025), (c) => c === '401')).toBe(-advanceInterest(2025))
+  })
+
+  it('books the design job of Atelier Lumen for Maison Verdier, VAT on receipt collected when paid', () => {
+    const ledger = lumen.ledger(2025)
+    expect(accountBalance(ledger, (c) => c === '44574')).toBe(0)
+    const transfer = ledger.find((e) => e.reference === `TVA-ENC-${DESIGN_INVOICE.number}`)!
+    expect(transfer.date).toBe(DESIGN_INVOICE.paymentDate)
+    expect(transfer.lines).toEqual([{ account: '44574', debit: 720 }, { account: '44571', credit: 720 }])
+    const october = lumen.monthlyVat(2025, 10)
+    const octoberReceipts = range('atelier-lumen')
+      .filter((t) => t.date.startsWith('2025-10') && t.vatAccount === '44571')
+      .reduce((sum, t) => sum + t.booking.find((l) => l.account === '44571')!.credit!, 0)
+    expect(october.collected).toBe(round2(octoberReceipts + 720))
+    expect(accountBalance(verdier.ledger(2025), (c) => c === '6226')).toBe(12 * feeSubsidiary('maison-verdier').net + DESIGN_INVOICE.net)
   })
 
   it('receives the dividends voted and paid by Atelier Lumen (457 / 512 on the subsidiary side)', () => {
+    const lumenTxs = range('atelier-lumen')
+    const holdingTxs = range('lumen-holding')
     for (const year of [2025, 2026]) {
       const dividend = lumenDividend(year)
       const paid = lumenTxs.find((t) => t.kind === 'dividend' && t.date.startsWith(String(year)))!
       const received = holdingTxs.find((t) => t.kind === 'dividend' && t.date.startsWith(String(year)))!
       expect(paid).toMatchObject({ date: dividend.payment, amount: dividend.amount, account: '457', side: 'debit' })
       expect(received).toMatchObject({ date: dividend.payment, amount: dividend.amount, account: '761', side: 'credit' })
+      // The description names the subsidiary: the group view recognises the dividend.
+      expect(received.label).toContain('ATELIER LUMEN')
       const agm = lumen.ledger(year).find((e) => e.reference === `AGO-${year}`)!
       expect(agm.date).toBe(dividend.agm)
       expect(agm.lines).toContainEqual({ account: '457', credit: dividend.amount })
     }
-    // 457 is cleared once paid.
+    // 457 is cleared once paid; 2025's result covers the 2026 dividend.
     expect(accountBalance(lumen.ledger(2025), (c) => c === '457')).toBe(0)
+    expect(lumen.summary(2025).netResult).toBeGreaterThan(lumenDividend(2026).amount)
   })
 
   it('taxes only 5% of the dividends (parent-subsidiary regime)', () => {
     const summary = holding.summary(2025)
-    expect(summary.otherIncome).toBe(lumenDividend(2025).amount)
+    expect(summary.otherIncome).toBe(round2(lumenDividend(2025).amount + advanceInterest(2025)))
     expect(summary.taxableIncome).toBe(round2(summary.resultBeforeTax - 0.95 * lumenDividend(2025).amount))
-    expect(accountBalance(holding.ledger(2025), (c) => c === '261')).toBe(HOLDING_PARTICIPATION)
   })
 })
 
@@ -385,6 +479,6 @@ describe('2026 budgets of the demo', () => {
 
   it("budgets Atelier Lumen's management fees at the convention's monthly price", () => {
     const fees = planBudget2026(lumen, DEMO_BUDGETS['atelier-lumen']).find((l) => l.prefix === '6226')!
-    expect(fees.recurring).toEqual([expect.objectContaining({ cents: LUMEN_MANAGEMENT_FEE.net * 100, frequency: 'MONTHLY', startMonth: '2026-01' })])
+    expect(fees.recurring).toEqual([expect.objectContaining({ cents: feeSubsidiary('atelier-lumen').net * 100, frequency: 'MONTHLY', startMonth: '2026-01' })])
   })
 })

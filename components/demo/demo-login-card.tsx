@@ -98,9 +98,9 @@ export function DemoLoginCard({
           <StatusBadge tone="success">Démo</StatusBadge>
         </CardTitle>
         <CardDescription>
-          Explorez Kledg avec quatre sociétés fictives&nbsp;: une SASU de services, une EURL commerçante, une SCI à
-          l&apos;IS et une holding, avec des comptes Qonto simulés qui reçoivent de nouvelles transactions chaque
-          jour ouvré.
+          Explorez Kledg avec un petit groupe fictif de quatre sociétés&nbsp;: une holding, ses deux filiales (une
+          SASU de services et une EURL commerçante) et une SCI à l&apos;IS dont elle détient 40&nbsp;%, avec des
+          comptes Qonto simulés qui reçoivent de nouvelles transactions chaque jour ouvré.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
