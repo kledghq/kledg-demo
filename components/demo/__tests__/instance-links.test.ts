@@ -10,7 +10,7 @@ describe('settings sidebar with the instance links of the Administrateur persona
     const groups = visibleSettingsGroups(false, visible, links)
     const instance = groups.find((g) => g.label === 'Instance')!
     expect(instance.items.map((i) => [i.title, i.url])).toEqual([
-      ["État de l'instance", '/demo/instance'],
+      ['Configuration', '/demo/instance'],
       ['Utilisateurs', '/demo/users'],
       ['Mises à jour', '/demo/updates'],
     ])
