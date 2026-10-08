@@ -27,7 +27,7 @@ describe('demo rebuild dialogs', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Changer de profil' }))
 
     const dialog = await screen.findByRole('alertdialog')
-    expect(within(dialog).getByRole('heading', { name: 'Changer de profil ?' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('heading', { name: 'Changer de profil\u00a0?' })).toBeInTheDocument()
     const radios = within(dialog).getAllByRole('radio')
     expect(radios.map((r) => r.closest('label')!.textContent)).toEqual([
       expect.stringContaining('Dirigeanten cours'),
@@ -65,7 +65,7 @@ describe('demo rebuild dialogs', () => {
     render(<ResetDemoButton reset={reset} />)
     fireEvent.click(screen.getByRole('button', { name: 'Réinitialiser ma démo' }))
     const dialog = await screen.findByRole('alertdialog')
-    expect(within(dialog).getByRole('heading', { name: 'Réinitialiser votre démo ?' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('heading', { name: 'Réinitialiser votre démo\u00a0?' })).toBeInTheDocument()
     expect(within(dialog).queryByRole('list', { name: /Dirigeant|Expert-comptable/ })).toBeNull()
     const confirm = within(dialog).getByRole('button', { name: 'Réinitialiser' })
     expect(confirm.className).toContain('bg-destructive')
