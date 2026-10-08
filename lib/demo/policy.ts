@@ -4,7 +4,9 @@
  *
  * In demo mode a visitor's sandbox account can't change its password or
  * email, delete its account or companies (the sandbox cleanup and the
- * "Réinitialiser ma démo" button do that), manage users, members or updates,
+ * "Réinitialiser ma démo" button do that), manage users, members or updates
+ * (no invitation, no removal of a member, no leaving a company: the
+ * memberships of a sandbox are part of its seed),
  * or connect a real bank; the instance sends no email and has no first-run
  * setup nor guided start (the companies are seeded). Renaming the account
  * (profile page) stays allowed: it is harmless. The same rules apply to every account of a demo instance (`actor`
@@ -21,6 +23,7 @@ const REFUSED: Partial<Record<InstanceAction, string>> = {
   'delete-company': 'Les sociétés de démonstration ne peuvent pas être supprimées\u00a0: utilisez « Réinitialiser ma démo » pour repartir de zéro.',
   'invite-member': "L'invitation de membres par email est désactivée sur l'instance de démonstration.",
   'invitation-sign-up': "La création de compte depuis une invitation est désactivée sur l'instance de démonstration.",
+  'remove-member': "Le retrait de membres est désactivé sur l'instance de démonstration.",
   'manage-users': "La gestion des utilisateurs est désactivée sur l'instance de démonstration.",
   'manage-updates': "Les mises à jour se gèrent sur votre propre instance, pas sur l'instance de démonstration.",
   'connect-bank': "Seule la banque Qonto simulée est disponible sur l'instance de démonstration.",

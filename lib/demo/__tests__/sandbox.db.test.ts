@@ -9,7 +9,10 @@
  *   the other sandbox untouched;
  * - the cap (recycling an idle sandbox, else a friendly refusal), the
  *   per-IP rate limit, and the nightly cleanup (CRON_SECRET) that deletes
- *   inactive sandboxes with every row.
+ *   inactive sandboxes with every row;
+ * - receipts dropped on Justificatifs stay in PostgreSQL (no object storage
+ *   on the demo) and go with the sandbox's companies (reset, recycling and
+ *   cleanup).
  *
  * The session is mocked (getCurrentUser), and next/headers gives the action
  * a client IP and a cookie store. Skipped when the test database server is
@@ -28,6 +31,8 @@ const state = await vi.hoisted(async () => {
   process.env.QONTO_API_URL = 'https://demo.example.com/api/demo/qonto/v2'
   process.env.CRON_SECRET = 'cron-secret-for-tests'
   delete process.env.RATE_LIMIT_DISABLED
+  // The demo has no object storage: receipts stay in PostgreSQL (lib/storage/config.ts).
+  for (const name of ['KLEDG_STORAGE_DRIVER', 'BLOB_READ_WRITE_TOKEN', 'BLOB_STORE_ID', 'KLEDG_S3_BUCKET', 'KLEDG_STORAGE_DIR']) delete process.env[name]
   // Kledg trusts a proxy header for the client IP only by configuration (lib/client-ip.ts).
   process.env.RATE_LIMIT_IP_HEADER = 'x-real-ip'
   return {
@@ -89,18 +94,33 @@ const companiesRoute = () => import('@/app/api/companies/route')
 const companyRoute = () => import('@/app/api/companies/[id]/route')
 const samplesRoute = () => import('@/app/api/demo/samples/route')
 const cronRoute = () => import('@/app/api/cron/reset-demo/route')
+const stagedRoute = () => import('@/app/api/receipts/staged/route')
+
+const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 7])
+
+/** Drops a receipt on the Justificatifs page of `companyId`, as `v`, through Kledg's route. */
+async function dropReceipt(v: Visitor, companyId: string, name: string): Promise<Response> {
+  as(v)
+  const form = new FormData()
+  form.set('companyId', companyId)
+  form.set('file', new File([JPEG], name, { type: 'image/jpeg' }))
+  const handler = ((await stagedRoute()) as unknown as { POST: Handler }).POST
+  return handler(new NextRequest('https://demo.example.com/api/receipts/staged', { method: 'POST', body: form, headers: { origin: 'https://demo.example.com' } }))
+}
 
 /** Rows tied to these companies, all tables that grow with a sandbox. */
 async function rowsOf(companyIds: string[]) {
-  const [accounts, entries, lines, transactions, rules, integrations] = await Promise.all([
+  const [accounts, entries, lines, transactions, rules, integrations, stagedReceipts, receiptFiles] = await Promise.all([
     prisma.account.count({ where: { companyId: { in: companyIds } } }),
     prisma.accountingEntry.count({ where: { companyId: { in: companyIds } } }),
     prisma.entryLine.count({ where: { accountingEntry: { companyId: { in: companyIds } } } }),
     prisma.bankTransaction.count({ where: { bankAccount: { bankConnection: { companyId: { in: companyIds } } } } }),
     prisma.transactionRule.count({ where: { companyId: { in: companyIds } } }),
     prisma.integration.count({ where: { companyId: { in: companyIds } } }),
+    prisma.stagedReceipt.count({ where: { companyId: { in: companyIds } } }),
+    prisma.receiptFile.count({ where: { companyId: { in: companyIds } } }),
   ])
-  return { accounts, entries, lines, transactions, rules, integrations }
+  return { accounts, entries, lines, transactions, rules, integrations, stagedReceipts, receiptFiles }
 }
 
 let a: Visitor
@@ -276,6 +296,17 @@ describe.skipIf(!available)('private demo sandboxes', () => {
       data: { bankAccountId: account.id, externalTransactionId: 'import-visitor-1', amount: '42.00', date: new Date('2026-09-30T00:00:00Z'), side: 'debit', label: 'Ligne importée', imported: true },
     })
     await prisma.transactionRule.create({ data: { companyId: atelier.id, name: 'Règle du visiteur', journalCode: 'BQ' } })
+    // A receipt dropped on Justificatifs: its bytes in PostgreSQL, never in an object storage the demo does not have.
+    const dropped = await dropReceipt(a, atelier.id, '2026-09-30 Boulangerie 42,00.jpg')
+    expect(dropped.status, await dropped.clone().text()).toBe(201)
+    const file = await prisma.receiptFile.findFirstOrThrow({ where: { companyId: atelier.id } })
+    expect([file.storageDriver, file.storageKey, file.content?.length]).toEqual(['postgres', null, JPEG.length])
+    // And one filed on a bank line (an attachment that keeps its receipt file).
+    const filed = await prisma.receiptFile.create({
+      data: { companyId: atelier.id, sha256: 'f'.repeat(64), contentType: 'image/jpeg', size: 4, content: Buffer.from([0xff, 0xd8, 0xff, 0xe0]) },
+    })
+    const line = await prisma.bankTransaction.findFirstOrThrow({ where: { externalTransactionId: 'import-visitor-1' } })
+    await prisma.attachment.create({ data: { companyId: atelier.id, fileName: 'ticket.jpg', receiptFileId: filed.id, bankTransactionId: line.id } })
     await prisma.apikey.create({ data: { id: 'key-a', referenceId: a.id, key: 'hashed-a', createdAt: new Date(), updatedAt: new Date() } })
     const grant = await prisma.aiAccessGrant.create({
       data: { userId: a.id, apiKeyId: 'key-a', allCompanies: false, companies: { create: [{ companyId: atelier.id }] } },
@@ -292,9 +323,10 @@ describe.skipIf(!available)('private demo sandboxes', () => {
     expect(after.companies.map((c) => c.id)).not.toContain(atelier.id)
     expect(await prisma.bankTransaction.count({ where: { externalTransactionId: 'import-visitor-1' } })).toBe(0)
     expect(await prisma.transactionRule.count({ where: { name: 'Règle du visiteur' } })).toBe(0)
+    expect(await prisma.receiptFile.count({ where: { id: { in: [file.id, filed.id] } } })).toBe(0)
     expect(await prisma.aiAccessGrantCompany.count({ where: { grantId: grant.id } })).toBe(0)
     expect(await rowsOf(after.companies.map((c) => c.id))).toEqual(ownBefore)
-    expect(await rowsOf(a.companies.map((c) => c.id))).toEqual({ accounts: 0, entries: 0, lines: 0, transactions: 0, rules: 0, integrations: 0 })
+    expect(await rowsOf(a.companies.map((c) => c.id))).toEqual({ accounts: 0, entries: 0, lines: 0, transactions: 0, rules: 0, integrations: 0, stagedReceipts: 0, receiptFiles: 0 })
     // Same account, still signed in, API key and assistant connection kept; the other sandbox is untouched.
     expect(await prisma.session.count({ where: { userId: a.id } })).toBe(sessionsBefore)
     expect(await prisma.aiAccessGrant.count({ where: { id: grant.id } })).toBe(1)
@@ -337,14 +369,15 @@ describe.skipIf(!available)('private demo sandboxes', () => {
     // Everyone active: no room.
     expect(await service.provisionSandbox({ ip: '198.51.100.20', limits })).toEqual({ ok: false, reason: 'full' })
 
-    // b idle for two hours: recycled for the newcomer.
+    // b idle for two hours, with a receipt dropped earlier: recycled for the newcomer.
+    expect((await dropReceipt(b, b.companies[0].id, 'recycled.jpg')).status).toBe(201)
     const twoHoursAgo = new Date(Date.now() - 2 * 3600_000)
     await prisma.user.update({ where: { id: b.id }, data: { updatedAt: twoHoursAgo } })
     await prisma.session.updateMany({ where: { userId: b.id }, data: { updatedAt: twoHoursAgo } })
     const newcomer = await service.provisionSandbox({ ip: '198.51.100.21', limits })
     expect(newcomer).toMatchObject({ ok: true, evicted: 1 })
     expect(await prisma.user.findUnique({ where: { id: b.id } })).toBeNull()
-    expect(await rowsOf(b.companies.map((c) => c.id))).toEqual({ accounts: 0, entries: 0, lines: 0, transactions: 0, rules: 0, integrations: 0 })
+    expect(await rowsOf(b.companies.map((c) => c.id))).toEqual({ accounts: 0, entries: 0, lines: 0, transactions: 0, rules: 0, integrations: 0, stagedReceipts: 0, receiptFiles: 0 })
     expect(await service.countSandboxes()).toBe(live)
     if (newcomer.ok) b = await visitor(newcomer.userId)
   }, 60_000)
@@ -355,6 +388,9 @@ describe.skipIf(!available)('private demo sandboxes', () => {
       data: { id: 'key-b', referenceId: b.id, key: 'hashed', createdAt: new Date(), updatedAt: new Date() },
     })
     await prisma.aiAccessGrant.create({ data: { userId: b.id, apiKeyId: 'key-b' } })
+    // A receipt dropped on Justificatifs, staged and not filed yet.
+    expect((await dropReceipt(b, b.companies[0].id, 'ticket.jpg')).status).toBe(201)
+    expect((await rowsOf(b.companies.map((c) => c.id))).stagedReceipts).toBe(1)
     await prisma.session.create({
       data: { id: 'session-b', token: 'token-b', userId: b.id, expiresAt: new Date(Date.now() + 86_400_000) },
     })
@@ -376,7 +412,7 @@ describe.skipIf(!available)('private demo sandboxes', () => {
     expect(await prisma.aiAccessGrant.count({ where: { userId: b.id } })).toBe(0)
     expect(await prisma.member.count({ where: { userId: b.id } })).toBe(0)
     expect(await prisma.company.count({ where: { slug: { endsWith: `-${b.key}` } } })).toBe(0)
-    expect(await rowsOf(b.companies.map((c) => c.id))).toEqual({ accounts: 0, entries: 0, lines: 0, transactions: 0, rules: 0, integrations: 0 })
+    expect(await rowsOf(b.companies.map((c) => c.id))).toEqual({ accounts: 0, entries: 0, lines: 0, transactions: 0, rules: 0, integrations: 0, stagedReceipts: 0, receiptFiles: 0 })
     expect(await prisma.user.findUnique({ where: { email: 'demo@kledg.com' } })).toBeNull()
     // Addresses of deleted companies go with them: only a's four remain.
     expect(await prisma.address.count()).toBe(4)

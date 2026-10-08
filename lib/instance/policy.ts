@@ -15,9 +15,9 @@ import type { ActionRefusal, InstanceAction, InstanceActor, RateLimitRule } from
 /**
  * Whether `actor` may perform `action` on this instance. `actor` is null for
  * anonymous requests (password reset request, first-run setup, emails).
- * Kledg allows every action, 'remove-member' included: a company
- * administrator removes members of their company within the rules of
- * lib/rbac/remove-member.service.ts.
+ * Kledg allows every action, 'remove-member' included. kledg-demo: in demo
+ * mode only the actions of ALLOWED_IN_DEMO (lib/demo/policy.ts) pass;
+ * 'remove-member' is refused (no removal of a member, no leaving).
  */
 export async function isActionAllowed(action: InstanceAction, actor: InstanceActor | null = null): Promise<boolean> {
   return demoIsActionAllowed(action, actor)

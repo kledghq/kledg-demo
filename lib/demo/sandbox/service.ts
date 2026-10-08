@@ -23,6 +23,12 @@
  * and are banned: nobody signs in as them.
  *
  * Activity is recorded by ./activity.ts.
+ *
+ * Receipts (Justificatifs): the staged receipts and receipt files of a
+ * sandbox company go with it (ON DELETE CASCADE). The demo stores receipt
+ * bytes in PostgreSQL (no object storage configured), so the rows are all
+ * there is; should an object storage ever be connected, the objects of the
+ * deleted files are deleted after the commit, like Kledg's deleteCompany.
  */
 
 import { randomBytes, randomUUID } from 'crypto'
@@ -32,6 +38,7 @@ import { prisma } from '@/lib/prisma'
 import { consumeRateLimit } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 import { isDemoMode } from '@/lib/demo/mode'
+import { discardObjects } from '@/lib/receipts/receipt-file-store'
 import { seedDemoCompanies } from '@/lib/demo/seed'
 import {
   newSandboxKey,
@@ -53,6 +60,9 @@ import { sandboxPersona } from './membership'
 export { sandboxPersona }
 
 type Db = Prisma.TransactionClient | typeof prisma
+
+/** A receipt file's place in object storage (lib/receipts/receipt-file-store.ts), collected before its row is deleted. */
+type StoredObject = { storageDriver: string; storageKey: string | null }
 
 /** The shared demo account of the first version of the demo, removed by the cleanup. */
 export const LEGACY_DEMO_EMAIL = 'demo@kledg.com'
@@ -172,8 +182,8 @@ async function deleteDirectorsInTx(tx: Prisma.TransactionClient, sandboxKeys: st
 }
 
 /** Deletes the companies of a sandbox and its fictional directors (in `tx`). */
-async function deleteSandboxCompaniesInTx(tx: Prisma.TransactionClient, user: { id: string; email: string }): Promise<void> {
-  await deleteCompaniesInTx(tx, await companiesOwnedBy(tx, [user]))
+async function deleteSandboxCompaniesInTx(tx: Prisma.TransactionClient, user: { id: string; email: string }, objects: StoredObject[]): Promise<void> {
+  await deleteCompaniesInTx(tx, await companiesOwnedBy(tx, [user]), objects)
   const key = sandboxKeyOf(user.email)
   if (key) await deleteDirectorsInTx(tx, [key])
 }
@@ -181,8 +191,11 @@ async function deleteSandboxCompaniesInTx(tx: Prisma.TransactionClient, user: { 
 /**
  * Deletes companies with every row that depends on them (cascades: ledger,
  * fiscal years, bank connections, accounts and transactions, imported
- * statements, rules, integrations, attachments, organization and members,
- * AI grant scopes) and their addresses. Runs in `tx`.
+ * statements, rules, integrations, attachments, staged receipts and receipt
+ * files, organization and members, AI grant scopes) and their addresses.
+ * Runs in `tx`. The receipt files kept in object storage are added to
+ * `objects`: the caller deletes them after the commit (deletionTransaction);
+ * with the demo's PostgreSQL storage there are none.
  *
  * Kledg keeps the books of a real company 10 years: its triggers refuse to
  * delete a closed fiscal year (migration 20261004090000) or a company with
@@ -195,10 +208,13 @@ async function deleteSandboxCompaniesInTx(tx: Prisma.TransactionClient, user: { 
  * never deleted here. The company foreign key is ON DELETE SET NULL, so the
  * rows of a deleted sandbox stay, detached from any company.
  */
-export async function deleteCompaniesInTx(tx: Prisma.TransactionClient, companyIds: string[]): Promise<void> {
+export async function deleteCompaniesInTx(tx: Prisma.TransactionClient, companyIds: string[], objects: StoredObject[]): Promise<void> {
   if (companyIds.length === 0) return
   await tx.$queryRaw`SELECT set_config('kledg.closed_year_bypass', 'on', true), set_config('kledg.company_purge', 'on', true)`
   await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`
+  objects.push(
+    ...(await tx.receiptFile.findMany({ where: { companyId: { in: companyIds }, storageKey: { not: null } }, select: { storageDriver: true, storageKey: true } })),
+  )
   const owned = await tx.company.findMany({
     where: { id: { in: companyIds } },
     select: { addressId: true, headquartersAddressId: true, establishments: { select: { addressId: true } } },
@@ -226,11 +242,11 @@ export async function deleteCompaniesInTx(tx: Prisma.TransactionClient, companyI
 }
 
 /** Deletes sandbox users, their companies and every row tied to them (in `tx`). */
-async function deleteSandboxUsersInTx(tx: Prisma.TransactionClient, users: Array<{ id: string; email: string }>): Promise<void> {
+async function deleteSandboxUsersInTx(tx: Prisma.TransactionClient, users: Array<{ id: string; email: string }>, objects: StoredObject[]): Promise<void> {
   const sandboxUsers = users.filter((u) => sandboxKeyOf(u.email))
   if (sandboxUsers.length === 0) return
   const userIds = sandboxUsers.map((u) => u.id)
-  await deleteCompaniesInTx(tx, await companiesOwnedBy(tx, sandboxUsers))
+  await deleteCompaniesInTx(tx, await companiesOwnedBy(tx, sandboxUsers), objects)
   await deleteDirectorsInTx(tx, sandboxUsers.map((u) => sandboxKeyOf(u.email)!))
   // API keys reference their user without a foreign key.
   await tx.apikey.deleteMany({ where: { referenceId: { in: userIds } } })
@@ -241,9 +257,17 @@ async function deleteSandboxUsersInTx(tx: Prisma.TransactionClient, users: Array
 
 const DELETE_TX = { timeout: 60_000, maxWait: 10_000 } as const
 
+/** A deletion transaction, then the deletion of the stored objects of the receipt files it removed. */
+async function deletionTransaction<T>(fn: (tx: Prisma.TransactionClient, objects: StoredObject[]) => Promise<T>): Promise<T> {
+  const objects: StoredObject[] = []
+  const result = await prisma.$transaction((tx) => fn(tx, objects), DELETE_TX)
+  await discardObjects(objects)
+  return result
+}
+
 /** Deletes sandboxes (users and all their data). Other accounts are ignored. */
 export async function deleteSandboxes(users: Array<{ id: string; email: string }>): Promise<void> {
-  await prisma.$transaction((tx) => deleteSandboxUsersInTx(tx, users), DELETE_TX)
+  await deletionTransaction((tx, objects) => deleteSandboxUsersInTx(tx, users, objects))
 }
 
 // ── Creation ───────────────────────────────────────────────────────────────
@@ -309,6 +333,7 @@ export async function provisionSandbox(
   const password = randomBytes(24).toString('base64url')
   const passwordHash = await hashPassword(password)
 
+  const evictedObjects: StoredObject[] = []
   const admitted = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ADMISSION_LOCK}))`
     const live = await countSandboxes(tx)
@@ -317,7 +342,7 @@ export async function provisionSandbox(
       const needed = live - limits.maxSandboxes + 1
       const victims = await idleSandboxes(tx, new Date(now.getTime() - limits.evictIdleMinutes * MINUTE_MS), needed)
       if (victims.length < needed) return null
-      await deleteSandboxUsersInTx(tx, victims)
+      await deleteSandboxUsersInTx(tx, victims, evictedObjects)
       evicted = victims.length
     }
     // A key already taken (about one chance in two billion) is drawn again.
@@ -337,6 +362,7 @@ export async function provisionSandbox(
     }
     throw new Error('Could not draw a free sandbox key')
   }, DELETE_TX)
+  await discardObjects(evictedObjects)
   if (!admitted) return { ok: false, reason: 'full' }
 
   const user = { id: admitted.userId, email: admitted.email }
@@ -398,7 +424,7 @@ async function seedSandboxCompanies(
   } catch (error) {
     if (!isUniqueViolation(error)) throw error
     logger.warn('[demo] sandbox seed hit a unique constraint, retrying with new numbers')
-    await prisma.$transaction((tx) => deleteSandboxCompaniesInTx(tx, { id: userId, email: sandboxEmail(sandboxKey) }), DELETE_TX)
+    await deletionTransaction((tx, objects) => deleteSandboxCompaniesInTx(tx, { id: userId, email: sandboxEmail(sandboxKey) }, objects))
     return unbalanced(await seedDemoCompanies({ ownerId: userId, sandboxKey, persona, now, log }))
   }
 }
@@ -435,7 +461,7 @@ export async function resetSandbox(
     return { ok: false, reason: 'rate-limited' }
   }
   const persona = options.persona ?? (await sandboxPersona(user.id))
-  await prisma.$transaction((tx) => deleteSandboxCompaniesInTx(tx, user), DELETE_TX)
+  await deletionTransaction((tx, objects) => deleteSandboxCompaniesInTx(tx, user, objects))
   await seedSandboxCompanies(user.id, sandboxKey, persona, now)
   await prisma.user.update({ where: { id: user.id }, data: { updatedAt: now } })
   return { ok: true, slugs: await sandboxCompanySlugs(user.id), persona, durationMs: Date.now() - started }
@@ -485,15 +511,15 @@ export async function cleanupSandboxes(
   // The shared demo account (and its companies) of the first demo version.
   const legacy = await prisma.user.findUnique({ where: { email: LEGACY_DEMO_EMAIL }, select: { id: true } })
   if (legacy) {
-    await prisma.$transaction(async (tx) => {
+    await deletionTransaction(async (tx, objects) => {
       const companies = await tx.company.findMany({
         where: { organization: { members: { some: { userId: legacy.id } } } },
         select: { id: true },
       })
-      await deleteCompaniesInTx(tx, companies.map((c) => c.id))
+      await deleteCompaniesInTx(tx, companies.map((c) => c.id), objects)
       await tx.apikey.deleteMany({ where: { referenceId: legacy.id } })
       await tx.user.delete({ where: { id: legacy.id } })
-    }, DELETE_TX)
+    })
   }
 
   // Every company of a demo instance has a member; one without, older than
@@ -507,7 +533,7 @@ export async function cleanupSandboxes(
     take: 100,
   })
   if (orphans.length > 0) {
-    await prisma.$transaction((tx) => deleteCompaniesInTx(tx, orphans.map((c) => c.id)), DELETE_TX)
+    await deletionTransaction((tx, objects) => deleteCompaniesInTx(tx, orphans.map((c) => c.id), objects))
   }
 
   // Fictional directors outlive their visitor only if a deletion was cut
@@ -524,7 +550,7 @@ export async function cleanupSandboxes(
   const orphanKeys = directorKeys.filter((key) => !liveVisitors.has(sandboxEmail(key)))
   let orphanDirectorCount = 0
   if (orphanKeys.length > 0) {
-    orphanDirectorCount = await prisma.$transaction(async (tx) => {
+    orphanDirectorCount = await deletionTransaction(async (tx, objects) => {
       const ids = (await directorsOf(tx, orphanKeys)).map((d) => d.id)
       const companies = await tx.company.findMany({
         where: {
@@ -533,9 +559,9 @@ export async function cleanupSandboxes(
         },
         select: { id: true },
       })
-      await deleteCompaniesInTx(tx, companies.map((c) => c.id))
+      await deleteCompaniesInTx(tx, companies.map((c) => c.id), objects)
       return deleteDirectorsInTx(tx, orphanKeys)
-    }, DELETE_TX)
+    })
   }
 
   return {

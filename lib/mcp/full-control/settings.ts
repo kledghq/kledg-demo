@@ -342,6 +342,8 @@ const manageMembersTool = fullControlTool({
   async preview({ companyId, action, email, role, memberId }, ctx) {
     if (action !== 'remove') ctx.requireInstanceAdministrator()
     const user = ctx.access.user
+    // kledg-demo: a removal the instance refuses (demo mode) is refused before the approval step, not after.
+    if (action === 'remove') await assertActionAllowed('remove-member', { id: user.id, email: user.email, role: user.role })
     const members = await listMembersWithRemoval(companyId, { id: user.id, email: user.email, name: user.name ?? null, role: user.role })
     const member = memberId ? (members.find((m) => m.id === memberId) ?? null) : null
     return { action, email: email ?? null, role: role ?? null, member, membersBefore: members.length }
