@@ -521,7 +521,7 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
         emailVerified: false,
         role: 'user',
         banned: true,
-        banReason: 'Compte fictif de la démo : connexion impossible.',
+        banReason: 'Compte fictif de la démo : connexion impossible.',
         createdAt: now,
         updatedAt: now,
       })),

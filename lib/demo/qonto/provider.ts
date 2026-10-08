@@ -52,7 +52,7 @@ export class InProcessDemoQontoProvider implements BankProvider {
       now: this.now,
     })
     if (!('json' in response) || response.status !== 200) {
-      throw new ExternalServiceError(`API Qonto simulée : erreur ${response.status} sur /${path.join('/')}`)
+      throw new ExternalServiceError(`API Qonto simulée : erreur ${response.status} sur /${path.join('/')}`)
     }
     return response.json as T
   }

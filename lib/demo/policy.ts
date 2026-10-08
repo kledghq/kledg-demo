@@ -20,6 +20,7 @@ const REFUSED: Partial<Record<InstanceAction, string>> = {
   'delete-account': 'Le compte de démonstration ne peut pas être supprimé.',
   'delete-company': 'Les sociétés de démonstration ne peuvent pas être supprimées\u00a0: utilisez « Réinitialiser ma démo » pour repartir de zéro.',
   'invite-member': "L'invitation de membres par email est désactivée sur l'instance de démonstration.",
+  'invitation-sign-up': "La création de compte depuis une invitation est désactivée sur l'instance de démonstration.",
   'manage-users': "La gestion des utilisateurs est désactivée sur l'instance de démonstration.",
   'manage-updates': "Les mises à jour se gèrent sur votre propre instance, pas sur l'instance de démonstration.",
   'connect-bank': "Seule la banque Qonto simulée est disponible sur l'instance de démonstration.",

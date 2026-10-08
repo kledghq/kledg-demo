@@ -91,7 +91,7 @@ export function SwitchPersonaButton({
       <RebuildDemoDialog
         open={open}
         onOpenChange={setOpen}
-        title="Changer de profil ?"
+        title="Changer de profil ?"
         summary="Votre démo est recréée avec le profil choisi, sur les mêmes quatre sociétés."
         confirmLabel={PERSONAS[target].switchAction}
         confirmDisabled={target === current}

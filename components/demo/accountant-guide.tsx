@@ -25,7 +25,7 @@ export function AccountantNote() {
         <div className="space-y-1">
           <p className="font-medium">En tant qu&apos;expert-comptable</p>
           <p className="text-muted-foreground text-xs">
-            Vous avez le rôle Comptable dans les quatre sociétés clientes ; chacune a son dirigeant, administrateur de
+            Vous avez le rôle Comptable dans les quatre sociétés clientes ; chacune a son dirigeant, administrateur de
             la société.
           </p>
         </div>
@@ -56,9 +56,9 @@ export function AccountantNote() {
 /** Sections of a company where the accountant meets the limits of the role. */
 const PAGE_HINTS: Record<string, string> = {
   banking:
-    "En tant qu'expert-comptable, vous consultez les comptes et rapprochez les opérations ; connecter, modifier ou supprimer une banque est réservé au dirigeant de la société.",
+    "En tant qu'expert-comptable, vous consultez les comptes et rapprochez les opérations ; connecter, modifier ou supprimer une banque est réservé au dirigeant de la société.",
   informations:
-    'Vous consultez les informations de la société ; seul son dirigeant peut les modifier.',
+    'Vous consultez les informations de la société ; seul son dirigeant peut les modifier.',
   members:
     "Vous êtes membre de cette société avec le rôle Comptable, à côté de son dirigeant, administrateur de la société. Seul l'administrateur de l'instance peut ajouter ou retirer des membres.",
 }

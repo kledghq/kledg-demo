@@ -219,12 +219,12 @@ export function handleDemoQontoRequest(request: DemoQontoRequest): DemoQontoResp
     const [y, m, d] = tx.date.split('-')
     const net = (tx.amount - tx.vatAmount).toFixed(2)
     const pdf = buildReceiptPdf(`Justificatif ${tx.counterparty}`, [
-      `Date : ${d}/${m}/${y}`,
-      `Libellé : ${tx.label}`,
-      `Montant HT : ${net} EUR`,
-      `TVA${tx.vatRate !== null ? ` (${tx.vatRate} %)` : ''} : ${tx.vatAmount.toFixed(2)} EUR`,
-      `Montant TTC : ${tx.amount.toFixed(2)} EUR`,
-      `Client : ${profile.receiptCustomer}`,
+      `Date : ${d}/${m}/${y}`,
+      `Libellé : ${tx.label}`,
+      `Montant HT : ${net} EUR`,
+      `TVA${tx.vatRate !== null ? ` (${tx.vatRate} %)` : ''} : ${tx.vatAmount.toFixed(2)} EUR`,
+      `Montant TTC : ${tx.amount.toFixed(2)} EUR`,
+      `Client : ${profile.receiptCustomer}`,
     ])
     return { status: 200, body: pdf, contentType: 'application/pdf' }
   }

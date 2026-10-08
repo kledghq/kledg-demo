@@ -18,7 +18,7 @@ export function ResetDemoButton({ reset }: { reset: () => Promise<ResetDemoResul
       <RebuildDemoDialog
         open={open}
         onOpenChange={setOpen}
-        title="Réinitialiser votre démo ?"
+        title="Réinitialiser votre démo ?"
         summary="Les quatre sociétés reviennent à leur état de départ, avec le même profil."
         confirmLabel="Réinitialiser"
         tone="destructive"

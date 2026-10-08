@@ -411,6 +411,8 @@ const ROUTE_MODULES = {
   tasksCount: () => import('@/app/api/tasks/count/route'),
   dashboardWidgets: () => import('@/app/api/dashboard/widgets/route'),
   dashboardLayout: () => import('@/app/api/dashboard/layout/route'),
+  demoSamples: () => import('@/app/api/demo/samples/route'),
+  demoSampleFile: () => import('@/app/api/demo/samples/[format]/route'),
   appearance: () => import('@/app/api/account/appearance/route'),
   displayMode: () => import('@/app/api/account/display-mode/route'),
   simpleCounts: () => import('@/app/api/companies/[id]/simple/counts/route'),
@@ -1088,6 +1090,16 @@ const READS_LET_THROUGH: Call[] = [
 ]
 
 /** The user's own dashboard of company A: every member, a viewer included (a preference); non-member 404, anonymous 401. */
+/**
+ * Demo sample statements of company A (lib/demo/samples-route.ts): demo
+ * instance only, 404 elsewhere; in demo mode, a company that is not a demo
+ * company has no samples (404) once access to it is granted.
+ */
+const DEMO_READS: Call[] = [
+  { label: 'list demo sample files', route: 'demoSamples', method: 'GET', path: () => `/api/demo/samples?companyId=${A()}` },
+  { label: 'download a demo sample file', route: 'demoSampleFile', method: 'GET', path: () => `/api/demo/samples/csv?companyId=${A()}`, params: () => ({ format: 'csv' }) },
+]
+
 const OWN_PREFERENCES: Call[] = [
   { label: 'save own dashboard layout', route: 'dashboardLayout', method: 'PUT', path: () => `/api/dashboard/layout?companyId=${A()}`, body: () => ({ items: [] }) },
   { label: 'reset own dashboard layout', route: 'dashboardLayout', method: 'DELETE', path: () => `/api/dashboard/layout?companyId=${A()}` },
@@ -1564,6 +1576,25 @@ describe.skipIf(!available)('authorization matrix', () => {
       } finally {
         await prisma.expenseClaimant.update({ where: { id: own.id }, data: { userId: 'u-viewer' } })
       }
+    })
+  })
+
+  describe('demo sample routes', () => {
+    beforeAll(reseed)
+    afterAll(() => {
+      vi.unstubAllEnvs()
+    })
+
+    it.each(DEMO_READS.map((c) => [c.label, c] as const))('%s: 404 outside demo mode, even for the company admin', async (_label, c) => {
+      expect((await call('companyAdmin', c)).status).toBe(404)
+    })
+
+    it.each(DEMO_READS.map((c) => [c.label, c] as const))('%s in demo mode: anonymous 401, member of B 404, no samples for a company outside the demo 404', async (_label, c) => {
+      vi.stubEnv('KLEDG_DEMO_MODE', 'true')
+      expect((await call('anonymous', c)).status).toBe(401)
+      expect((await call('memberB', c)).status).toBe(404)
+      expect((await call('viewer', c)).status).toBe(404)
+      vi.unstubAllEnvs()
     })
   })
 

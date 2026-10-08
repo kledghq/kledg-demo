@@ -402,7 +402,7 @@ function periodEntries(year: number, previous: FiscalYearSummary | null): Ledger
   entries.push({
     journal: 'OD',
     date: dividend.agm,
-    description: `Affectation du résultat ${year - 1} : dividendes votés en AGO`,
+    description: `Affectation du résultat ${year - 1} : dividendes votés en AGO`,
     reference: `AGO-${year}`,
     // The opening entry carries 2024 earnings in 110 (report à nouveau). From
     // 2026 on, the closing leaves the previous result in 120: the AGO

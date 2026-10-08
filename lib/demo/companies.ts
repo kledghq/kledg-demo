@@ -253,7 +253,7 @@ export const DEMO_COMPANIES: readonly DemoCompany[] = [
       VAT_PAYMENT_RULE,
       {
         name: 'Carburant du véhicule',
-        description: 'Gazole ou essence de la voiture du studio : TVA déductible à 80 % (CGI art. 298-4-1°)',
+        description: 'Gazole ou essence de la voiture du studio : TVA déductible à 80 % (CGI art. 298-4-1°)',
         autoCreate: false,
         priority: 30,
         conditions: [condition('counterparty', 'startsWith', 'Station-service'), debit, condition('operationType', 'equals', 'card')],
@@ -273,7 +273,7 @@ export const DEMO_COMPANIES: readonly DemoCompany[] = [
       },
       {
         name: 'Déplacements en train et VTC',
-        description: 'Transport de personnes : TVA non déductible (CGI annexe II art. 206, IV-2-3°)',
+        description: 'Transport de personnes : TVA non déductible (CGI annexe II art. 206, IV-2-3°)',
         autoCreate: false,
         priority: 30,
         conditions: [condition('counterparty', 'regex', '^(Billet de train|Course VTC)$'), debit, condition('operationType', 'equals', 'card')],
