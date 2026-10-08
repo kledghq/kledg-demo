@@ -251,12 +251,12 @@ describe.skipIf(!available)('private demo sandboxes', () => {
 
   it("refuses another sandbox's simulated Qonto credentials", async () => {
     const { handleDemoQontoRequest } = await import('../qonto/api')
-    const { decrypt } = await import('@/lib/integrations/encryption')
+    const { decrypt, integrationContext } = await import('@/lib/integrations/encryption')
     const { getEncryptionKey } = await import('@/lib/crypto/encryption-key')
     const credentialsOf = async (v: Visitor) => {
       const integration = await prisma.integration.findFirstOrThrow({ where: { companyId: v.companies[0].id } })
       const c = integration.credentials as { login: string; secretKey: string }
-      return { login: c.login, secretKey: decrypt(c.secretKey, getEncryptionKey()!) }
+      return { login: c.login, secretKey: decrypt(c.secretKey, getEncryptionKey()!, integrationContext(v.companies[0].id, 'QONTO', 'secretKey')) }
     }
     const [mine, theirs] = await Promise.all([credentialsOf(a), credentialsOf(b)])
     const request = (authorization: string) =>

@@ -51,7 +51,7 @@ import { DEFAULT_JOURNALS } from '@/lib/accounting/default-journals'
 import { validateAccountingEntry } from '@/lib/accounting/validator'
 import { ensureCompanyOrganization } from '@/lib/rbac/ensure-company-organization.service'
 import { closeFiscalYear } from '@/lib/accounting/fiscal-year-closure'
-import { encrypt } from '@/lib/integrations/encryption'
+import { encrypt, integrationContext } from '@/lib/integrations/encryption'
 import { getEncryptionKey } from '@/lib/crypto/encryption-key'
 import { syncIntegration } from '@/lib/integrations/sync'
 import { slugify } from '@/lib/companies/slug'
@@ -782,7 +782,7 @@ export async function seedDemoCompanies(options: DemoCompaniesSeedOptions): Prom
         provider: 'QONTO' as const,
         type: 'BANKING' as const,
         name: 'Intégration QONTO',
-        credentials: { login, secretKey: encrypt(secretKey, encryptionKey) },
+        credentials: { login, secretKey: encrypt(secretKey, encryptionKey, integrationContext(plan.id, 'QONTO', 'secretKey')) },
         credentialsEncrypted: true,
         status: 'active',
       }
