@@ -118,9 +118,10 @@ export interface MemberWithRemoval {
 /**
  * The members of the company, oldest first, each with the answer the
  * removal would get from `viewer` now (the page disables "Retirer" with the
- * reason). The removal checks it again under its lock. kledg-demo: when the
- * instance policy refuses 'remove-member' to `viewer` (demo mode), every
- * removal, leaving included, is refused with the policy's message.
+ * reason). The removal checks it again under its lock. When the instance
+ * policy refuses 'remove-member' to `viewer`, every removal, leaving
+ * included, is refused with the policy's message, so the page shows
+ * "Retirer" and "Quitter" disabled instead of failing on click.
  */
 export async function listMembersWithRemoval(companyId: string, viewer: RemovalActorUser): Promise<MemberWithRemoval[]> {
   const policyRefusal = (await isActionAllowed('remove-member', { id: viewer.id, email: viewer.email, role: viewer.role }))
