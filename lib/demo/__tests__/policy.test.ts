@@ -60,6 +60,16 @@ describe('instance policy of the demo (lib/instance/policy.ts override)', () => 
     expect(authActionOf('/change-email')).toBe('change-email')
   })
 
+  it('refuses the email and password sign-in over HTTP, so /login only offers "Entrer dans la démo"', async () => {
+    expect(authActionOf('/sign-in/email')).toBe('sign-in')
+    vi.stubEnv('KLEDG_DEMO_MODE', 'true')
+    const { message, statusCode } = handleError(await assertActionAllowed('sign-in').catch((e: unknown) => e))
+    expect(statusCode).toBe(403)
+    expect(message).toContain('Entrer dans la démo')
+    vi.stubEnv('KLEDG_DEMO_MODE', 'false')
+    expect(await isActionAllowed('sign-in')).toBe(true)
+  })
+
   it('refuses company creation to visitors with the demo message, and keeps Kledg\'s rule outside demo mode', async () => {
     const visitor = { id: 'u2', email: 'visiteur-abc@demo.kledg.com', role: 'user' }
     vi.stubEnv('KLEDG_DEMO_MODE', 'true')
