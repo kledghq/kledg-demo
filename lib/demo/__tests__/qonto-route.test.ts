@@ -1,8 +1,9 @@
 /**
  * The HTTP route of the simulated Qonto API (app/api/demo/qonto/v2/[...path]):
  * anonymous calls refused first, 404 outside demo mode, each sandbox company
- * answered with its own credentials (and the call counted as activity of its
- * sandbox), the invoicing lists of the Qonto invoice import empty.
+ * answered with its own credentials (and the call not counted as activity of
+ * its sandbox: the bank sync cron makes such calls), the invoicing lists of
+ * the Qonto invoice import empty.
  */
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -10,8 +11,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 const touched = vi.hoisted(() => [] as string[])
 
 vi.mock('@/lib/demo/sandbox/activity', () => ({
-  touchSandboxByKey: async (key: string) => {
-    touched.push(key)
+  touchSandbox: async (user: { email: string }) => {
+    touched.push(user.email)
   },
 }))
 
@@ -47,7 +48,7 @@ describe('simulated Qonto API route', () => {
     expect((await request(['organization'], lumenAuth())).status).toBe(404)
   })
 
-  it("serves a sandbox company with its own credentials and counts the call as the sandbox's activity", async () => {
+  it("serves a sandbox company with its own credentials, without counting the call as the sandbox's activity", async () => {
     vi.stubEnv('KLEDG_DEMO_MODE', 'true')
     expect((await request(['organization'], 'demo:wrong')).status).toBe(401)
     expect(touched).toEqual([])
@@ -55,7 +56,7 @@ describe('simulated Qonto API route', () => {
     expect(response.status).toBe(200)
     const body = (await response.json()) as { organization: { slug: string } }
     expect(body.organization.slug).toBe('atelier-lumen')
-    expect(touched).toEqual([SANDBOX])
+    expect(touched).toEqual([])
   })
 
   it('answers the Qonto invoice import with empty lists', async () => {

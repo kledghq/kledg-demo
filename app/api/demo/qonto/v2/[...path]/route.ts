@@ -1,15 +1,15 @@
 import { NextResponse } from 'next/server'
 import { isDemoMode, DEMO_QONTO_API_PATH } from '@/lib/demo'
 import { handleDemoQontoRequest } from '@/lib/demo/qonto/api'
-import { touchSandboxByKey } from '@/lib/demo/sandbox/activity'
 
 export const dynamic = 'force-dynamic'
 
 /**
  * Simulated Qonto API, only served when KLEDG_DEMO_MODE=true. The demo
  * instance points QONTO_API_URL here (see lib/demo/qonto/api.ts). Each
- * sandbox company authenticates with its own credentials; a call counts as
- * activity of that sandbox.
+ * sandbox company authenticates with its own credentials. A call is not
+ * activity of the sandbox: the daily bank sync cron calls it for every
+ * sandbox, which kept abandoned ones alive forever (lib/demo/sandbox/activity.ts).
  */
 async function handle(
   request: Request,
@@ -34,8 +34,6 @@ async function handle(
     authorization: request.headers.get('authorization'),
     baseUrl: `${url.origin}${DEMO_QONTO_API_PATH}`,
   })
-  if (result.tenant) await touchSandboxByKey(result.tenant.sandboxKey)
-
   if ('body' in result) {
     return new Response(new Uint8Array(result.body), {
       status: result.status,
