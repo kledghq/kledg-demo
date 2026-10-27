@@ -2,7 +2,9 @@
  * Instance policy of the demo (plugged into Kledg by lib/instance/policy.ts).
  * Pure: no database, no Node APIs (the request proxy imports it).
  *
- * In demo mode a visitor's sandbox account can't change its password or
+ * In demo mode nobody signs in with an email and a password (the sandbox
+ * accounts are signed in in-process by "Entrer dans la démo"), and a visitor's
+ * sandbox account can't change its password or
  * email, delete its account or companies (the sandbox cleanup and the
  * "Réinitialiser ma démo" button do that), manage users, members or updates
  * (no invitation, no removal of a member, no leaving a company: the
@@ -17,6 +19,7 @@ import type { ActionRefusal, InstanceAction, InstanceActor } from '@/lib/instanc
 import { DEMO_QONTO_API_PATH, isDemoMode, KLEDG_WEBSITE_URL } from './mode'
 
 const REFUSED: Partial<Record<InstanceAction, string>> = {
+  'sign-in': "La connexion par email et mot de passe est désactivée sur l'instance de démonstration\u00a0: utilisez « Entrer dans la démo ».",
   'change-password': 'Le mot de passe du compte de démonstration ne peut pas être modifié.',
   'change-email': "L'email du compte de démonstration ne peut pas être modifié.",
   'delete-account': 'Le compte de démonstration ne peut pas être supprimé.',
