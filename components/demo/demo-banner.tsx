@@ -9,6 +9,10 @@ import { SwitchPersonaButton } from './switch-persona-button'
 import { AccountantNote, AccountantPageHint } from './accountant-guide'
 import { BannerDetails } from './banner-details'
 
+/** The website's waitlist for the hosted version, tagged with where the visitor came from. */
+const waitlistUrl = new URL('/fr/waitlist', KLEDG_WEBSITE_URL)
+waitlistUrl.searchParams.set('from', 'demo')
+
 /**
  * Thin notice above every page of a demo instance (InstanceBanner slot,
  * components/instance/slots.tsx). For a visitor's private sandbox it names
@@ -16,8 +20,10 @@ import { BannerDetails } from './banner-details'
  * lives, offers to change persona or reset it (same persona), and records
  * the visit as activity (the cleanup deletes sandboxes inactive for 24 h).
  * In the accountant persona it also explains what the role can do, and why
- * on the pages whose actions the role refuses. On narrow screens it keeps
- * to one line: the persona, then "Détails" for the rest.
+ * on the pages whose actions the role refuses. Both variants link to the
+ * website: install an instance, or join the hosted version's waitlist. On
+ * narrow screens it keeps to one line: the persona, then "Détails" for the
+ * rest.
  */
 export async function DemoBanner({
   user,
@@ -35,6 +41,11 @@ export async function DemoBanner({
       Installez votre propre instance.
     </a>
   )
+  const waitlist = (
+    <a href={waitlistUrl.href} className="text-foreground font-medium underline underline-offset-2">
+      Ou attendez la version hébergée&nbsp;: rejoindre la liste d’attente
+    </a>
+  )
   return (
     <div className="bg-surface text-muted-foreground flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b px-4 py-1.5 text-center text-xs">
       {persona ? (
@@ -47,6 +58,7 @@ export async function DemoBanner({
             <span className="md:hidden">Réinitialisée automatiquement après 24 h d&apos;inactivité. Données fictives.</span>
             {persona === 'accountant' && <AccountantNote />}
             {install}
+            {waitlist}
             <SwitchPersonaButton current={persona} switchPersona={switchPersona} />
             <ResetDemoButton reset={reset} />
             {persona === 'accountant' && <AccountantPageHint />}
@@ -56,6 +68,7 @@ export async function DemoBanner({
         <>
           <span>Démo&nbsp;: données fictives.</span>
           {install}
+          {waitlist}
         </>
       )}
     </div>
