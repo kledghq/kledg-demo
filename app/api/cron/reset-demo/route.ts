@@ -5,13 +5,14 @@ import { cleanupSandboxes } from '@/lib/demo/sandbox/service'
 import { logger } from '@/lib/logger'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60
+export const maxDuration = 300
 
 /**
  * Nightly cleanup of the public demo instance: deletes the private sandboxes
  * inactive for more than DEMO_SANDBOX_TTL_HOURS (24 h by default), with all
  * their rows, within a time budget (what is left goes the next night or on
- * the next call). Active sandboxes are never touched. No-op unless
+ * the next call) that leaves a minute of the function's limit for the rest
+ * of the cleanup. Active sandboxes are never touched. No-op unless
  * KLEDG_DEMO_MODE=true. The path is kept from the first demo version, which
  * reset a shared account here.
  */
@@ -26,7 +27,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await cleanupSandboxes()
+    const result = await cleanupSandboxes({ budgetMs: 240_000 })
     logger.info(`[demo] cleanup: ${result.deleted} sandboxes deleted, ${result.remaining} left, ${result.live} live`)
     return NextResponse.json({ success: true, ...result })
   } catch (error) {
