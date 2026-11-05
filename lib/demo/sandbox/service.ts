@@ -485,9 +485,12 @@ export interface CleanupResult {
 }
 
 /**
- * Deletes sandboxes inactive for more than ttlHours, in small transactions
- * until `budgetMs` is spent; removes the shared account of the first demo
- * version and companies left without members.
+ * Deletes sandboxes inactive for more than ttlHours, one transaction per
+ * sandbox until `budgetMs` is spent; removes the shared account of the first
+ * demo version and companies left without members. The budget is only
+ * checked between transactions: a sandbox (four companies with their books)
+ * takes several seconds to delete, so batches of several sandboxes could
+ * overrun the function's time limit and roll back every night.
  */
 export async function cleanupSandboxes(
   options: { now?: Date; limits?: SandboxLimits; budgetMs?: number; batchSize?: number } = {},
@@ -496,7 +499,7 @@ export async function cleanupSandboxes(
   const now = options.now ?? new Date()
   const limits = options.limits ?? sandboxLimits()
   const deadline = Date.now() + (options.budgetMs ?? 40_000)
-  const batchSize = options.batchSize ?? 10
+  const batchSize = options.batchSize ?? 1
   const before = new Date(now.getTime() - limits.ttlHours * 60 * MINUTE_MS)
 
   let deleted = 0
