@@ -38,10 +38,11 @@ const DEMO_ROUTE_MODULES = {
  * instance only, 404 elsewhere; in demo mode, a company that is not a demo
  * company has no samples (404) once access to it is granted.
  */
-const DEMO_READS: Call[] = [
+// Call's route names are those of the shared module: these two are loaded by this file
+const DEMO_READS = [
   { label: 'list demo sample files', route: 'demoSamples', method: 'GET', path: () => `/api/demo/samples?companyId=${A()}` },
   { label: 'download a demo sample file', route: 'demoSampleFile', method: 'GET', path: () => `/api/demo/samples/csv?companyId=${A()}`, params: () => ({ format: 'csv' }) },
-]
+] as unknown as Call[]
 
 describe.skipIf(!available)('authorization matrix', () => {
   const reseed = useMatrix('matrix_demo')
