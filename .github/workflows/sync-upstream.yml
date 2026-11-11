@@ -8,14 +8,16 @@
 # next successful sync. Resolve by hand: merge upstream/main locally, fix,
 # push main.
 #
-# Token: the secret UPSTREAM_SYNC_TOKEN is required, because GITHUB_TOKEN
-# can't read another private repository (kledghq/kledg) and can't push
-# commits that change files under .github/workflows (merges from Kledg often
-# do). Fine-grained personal access token, resource owner kledghq,
-# repositories kledghq/kledg and kledghq/kledg-demo, permissions:
-#   Contents: Read and write, Workflows: Read and write (Metadata: Read is
-#   implied). Issues are handled with GITHUB_TOKEN.
-# See README.md (section kledg-demo) for least-privilege alternatives.
+# Token: the secret UPSTREAM_SYNC_TOKEN is required only to push main,
+# because GITHUB_TOKEN can't push commits that change files under
+# .github/workflows (merges from Kledg often do). kledghq/kledg is public: it
+# is fetched without any token. The sync token never reaches the disk or the
+# gate (install scripts, tests and build run third-party code): the checkout
+# keeps no credentials, and the token is passed to the final push only.
+# Fine-grained personal access token, resource owner kledghq, repository
+# kledghq/kledg-demo only, permissions: Contents: Read and write, Workflows:
+# Read and write (Metadata: Read is implied). No access to kledghq/kledg.
+# Issues are handled with GITHUB_TOKEN.
 #
 # Kledg's own "Update from Kledg" workflow (update-from-kledg.yml) is kept
 # identical to Kledg (its tests read it) but must never run here: it would
@@ -63,23 +65,24 @@ jobs:
         id: token
         run: |
           if [ "$HAS_SYNC_TOKEN" != "true" ]; then
-            printf 'Le secret `UPSTREAM_SYNC_TOKEN` est absent : impossible de lire kledghq/kledg et de pousser les fichiers de workflow. Voir README.md, section kledg-demo.\n' > "$REPORT"
+            printf 'Le secret `UPSTREAM_SYNC_TOKEN` est absent : impossible de pousser main et ses fichiers de workflow. Voir README.md, section kledg-demo.\n' > "$REPORT"
             echo "failed=token" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          # No credentials left in .git/config while the gate runs third-party code
+          persist-credentials: false
 
       - name: Merge kledghq/kledg main
         id: merge
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # actions/checkout's credentials (the sync token) also serve github.com/kledghq/kledg
+          # kledghq/kledg is public: fetched anonymously
           git remote add upstream "$UPSTREAM"
           git fetch --quiet upstream main
           UPSTREAM_SHA=$(git rev-parse upstream/main)
@@ -104,9 +107,9 @@ jobs:
             exit 1
           fi
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
         if: steps.merge.outputs.changes == 'true'
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         if: steps.merge.outputs.changes == 'true'
         with:
           node-version: 22
@@ -143,7 +146,14 @@ jobs:
       - name: Push main (redeploys the demo)
         id: push
         if: steps.merge.outputs.changes == 'true'
+        env:
+          # The only step that sees the sync token
+          SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         run: |
+          # The credentials go through git's environment, never on a command line
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$SYNC_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0
           if ! git push origin HEAD:main 2> "$RUNNER_TEMP/push.log"; then
             cat "$RUNNER_TEMP/push.log"
             {
