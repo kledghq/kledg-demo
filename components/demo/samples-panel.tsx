@@ -17,6 +17,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import { plural, pluralWord } from '@/lib/utils/plural'
 import { DEMO_DIALOG_EVENT, type DemoDialogState } from './events'
+import { trackDemoEvent } from './track-event'
 import {
   EXTERNAL_FILE_DRAG_TYPE,
   externalFile,
@@ -220,12 +221,15 @@ export function DemoSamplesPanel() {
               variant="ghost"
               size="xs"
               className={cn(!isMobile && 'hidden group-hover:inline-flex group-focus-within:inline-flex')}
-              onClick={() => importFile(file)}
+              onClick={() => {
+                trackDemoEvent('sample_import', { via: 'import' })
+                importFile(file)
+              }}
             >
               Importer
             </Button>
             <Button variant="ghost" size="icon-xs" className="shrink-0" asChild>
-              <a href={file.url} download={file.fileName} title={`Télécharger ${file.fileName}`} aria-label={`Télécharger ${file.fileName}`}>
+              <a href={file.url} download={file.fileName} onClick={() => trackDemoEvent('sample_import', { via: 'download' })} title={`Télécharger ${file.fileName}`} aria-label={`Télécharger ${file.fileName}`}>
                 <Download className="h-3.5 w-3.5" />
               </a>
             </Button>
