@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { StatusBadge } from '@/components/shared'
 import { cn } from '@/lib/utils'
+import { trackDemoEvent } from './track-event'
 import {
   DEFAULT_DEMO_PERSONA,
   DEMO_PERSONAS,
@@ -82,6 +83,7 @@ export function DemoLoginCard({
         setLoading(false)
         return
       }
+      trackDemoEvent('demo_start', { persona, mode: current === persona ? 'return' : current ? 'recreate' : 'new' })
       // A full load: the new session cookie applies to every server component.
       window.location.assign(result.redirectTo)
     } catch {

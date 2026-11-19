@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { DEMO_PERSONAS, isDemoPersona, PERSONAS, type DemoPersona } from '@/lib/demo/sandbox/persona'
 import { RebuildDemoDialog, useDemoDialog } from './rebuild-demo-dialog'
 import type { ResetDemoResult } from './reset-demo-button'
+import { trackDemoEvent } from './track-event'
 
 /** The personas a visitor can switch to, the current one first (shown, not selectable). */
 export function PersonaChoice({
@@ -96,7 +97,10 @@ export function SwitchPersonaButton({
         confirmLabel={PERSONAS[target].switchAction}
         confirmDisabled={target === current}
         tone="default"
-        run={() => switchPersona(target)}
+        run={() => {
+          trackDemoEvent('persona_switch', { to: target })
+          return switchPersona(target)
+        }}
         failureMessage="Le changement de profil a échoué. Réessayez dans un instant."
       >
         <PersonaChoice current={current} value={target} onChange={setTarget} />
