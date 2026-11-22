@@ -39,6 +39,7 @@ import { consumeRateLimit } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 import { isDemoMode } from '@/lib/demo/mode'
 import { discardObjects } from '@/lib/receipts/receipt-file-store'
+import { purgeCompaniesInTx } from '@/lib/companies/purge-companies'
 import { seedDemoCompanies } from '@/lib/demo/seed'
 import {
   newSandboxKey,
@@ -201,8 +202,9 @@ async function deleteSandboxCompaniesInTx(tx: Prisma.TransactionClient, user: { 
  * delete a closed fiscal year (migration 20261004090000) or a company with
  * books (migration 20261011100000, KLEDG_COMPANY_HAS_BOOKS). Sandbox
  * companies are throwaway copies of fictional books, so this transaction
- * sets the two transaction-scoped bypasses Kledg's triggers honour for such
- * instances (`kledg.company_purge` needs the Kledg migration that adds it).
+ * deletes them through Kledg's purge function (purgeCompaniesInTx,
+ * lib/companies/purge-companies.ts), the one path through those guards since
+ * kledghq/kledg#161: the transaction settings no longer open them.
  *
  * The audit log is append-only (migration 20261011090000): its rows are
  * never deleted here. The company foreign key is ON DELETE SET NULL, so the
@@ -210,7 +212,7 @@ async function deleteSandboxCompaniesInTx(tx: Prisma.TransactionClient, user: { 
  */
 export async function deleteCompaniesInTx(tx: Prisma.TransactionClient, companyIds: string[], objects: StoredObject[]): Promise<void> {
   if (companyIds.length === 0) return
-  await tx.$queryRaw`SELECT set_config('kledg.closed_year_bypass', 'on', true), set_config('kledg.company_purge', 'on', true)`
+  // Foreign keys checked at commit: the persons and addresses below go in any order
   await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`
   objects.push(
     ...(await tx.receiptFile.findMany({ where: { companyId: { in: companyIds }, storageKey: { not: null } }, select: { storageDriver: true, storageKey: true } })),
@@ -227,7 +229,8 @@ export async function deleteCompaniesInTx(tx: Prisma.TransactionClient, companyI
   // Persons only reference their company (no cascade): the demo's fictional
   // shareholders and officers go with it (their shareholder rows cascade).
   await tx.person.deleteMany({ where: { companyId: { in: companyIds } } })
-  await tx.company.deleteMany({ where: { id: { in: companyIds } } })
+  // The one path through Kledg's guards for companies with books (kledghq/kledg#161)
+  await purgeCompaniesInTx(tx, companyIds)
   if (addressIds.length > 0) {
     await tx.address.deleteMany({
       where: {
