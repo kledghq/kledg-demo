@@ -552,6 +552,75 @@ describe.skipIf(!available)('fiscal year closing', () => {
     expect(result.errors?.join(' ')).toContain('supprimez-le')
   })
 
+  it('keeps journal CL for the closing entry, and reads a CL- piece reference as an ordinary entry (#124)', async () => {
+    const c = await createCompany()
+    await bookYear(c)
+    const cl = await prisma.journal.create({ data: { companyId: c.id, code: 'CL', label: 'Clôture' } })
+    await expect(
+      createEntry({ companyId: c.id, fiscalYearId: c.fy2025, journalId: cl.id, date: day('2025-06-01'), description: 'Opération', status: 'draft', lines: [{ accountId: c.accounts.get('606')!, debit: 10, credit: 0 }, { accountId: c.accounts.get('512')!, debit: 0, credit: 10 }] }),
+    ).rejects.toThrow(/réservé/)
+    // A supplier invoice numbered CL-0042 stays in the statements
+    await createEntry({ companyId: c.id, fiscalYearId: c.fy2025, journalId: c.journals.get('AC')!, date: day('2025-08-01'), description: 'Facture CL-0042', reference: 'CL-0042', status: 'validated', lines: [{ accountId: c.accounts.get('606')!, debit: 100, credit: 0 }, { accountId: c.accounts.get('401')!, debit: 0, credit: 100 }] })
+    expect((await generateIncomeStatement(c.id, c.fy2025, 'complete')).netResult).toBe(RESULT_2025 - 100)
+    expect((await closeFiscalYear(c.id, c.fy2025)).success).toBe(true)
+  })
+
+  it('opens the year that starts the next day whatever its number, and never creates one over another year (#125)', async () => {
+    // A long year for a change of closing date, numbered 2027
+    const c = await createCompany()
+    await bookYear(c)
+    const long = await prisma.fiscalYear.create({ data: { companyId: c.id, year: 2027, startDate: day('2026-01-01'), endDate: day('2027-06-30') } })
+    const closed = await closeFiscalYear(c.id, c.fy2025)
+    expect(closed).toMatchObject({ success: true, nextFiscalYearId: long.id })
+    expect(await prisma.fiscalYear.count({ where: { companyId: c.id } })).toBe(2)
+
+    // A next year that starts later than the next day: the closing would create a year over it
+    const gap = await createCompany()
+    await bookYear(gap)
+    await prisma.fiscalYear.create({ data: { companyId: gap.id, year: 2026, startDate: day('2026-03-01'), endDate: day('2026-12-31') } })
+    const refused = await closeFiscalYear(gap.id, gap.fy2025)
+    expect(refused.success).toBe(false)
+    expect(refused.errors?.join(' ')).toContain('chevaucherait')
+    expect(await prisma.fiscalYear.count({ where: { companyId: gap.id } })).toBe(2)
+  })
+
+  it('refuses to reverse the closing entry and the à-nouveaux it brought forward (#126)', async () => {
+    const c = await createCompany()
+    await bookYear(c)
+    const closed = await closeFiscalYear(c.id, c.fy2025)
+    const { reverseEntry } = await import('@/lib/accounting/services/entry-lifecycle.service')
+    await expect(reverseEntry(c.id, closed.openingEntryId!)).rejects.toThrow(/L123-19/)
+    await expect(reverseEntry(c.id, closed.closingEntryId!, { date: '2026-01-15' })).rejects.toThrow(/clôture/)
+  })
+
+  it('brings forward the customer and supplier balances per tiers (#140)', async () => {
+    const c = await createCompany()
+    await book(c, 'BQ', '2025-01-02', [['512', 10000, 0], ['101', 0, 10000]])
+    const line = (code: string, debit: number, credit: number, aux?: [string, string]) => ({
+      accountId: c.accounts.get(code)!,
+      debit,
+      credit,
+      ...(aux && { auxiliaryAccountNumber: aux[0], auxiliaryAccountLabel: aux[1] }),
+    })
+    const entry = (journal: string, date: string, lines: ReturnType<typeof line>[]) =>
+      createEntry({ companyId: c.id, fiscalYearId: c.fy2025, journalId: c.journals.get(journal)!, date: day(date), description: 'Écriture', status: 'validated', lines })
+    await entry('VE', '2025-03-01', [line('411', 1200, 0, ['C00001', 'Martin SA']), line('706', 0, 1000), line('44571', 0, 200)])
+    await entry('VE', '2025-04-01', [line('411', 600, 0, ['C00002', 'Durand SARL']), line('706', 0, 500), line('44571', 0, 100)])
+    await entry('BQ', '2025-05-01', [line('512', 1200, 0), line('411', 0, 1200, ['C00001', 'Martin SA'])])
+    await entry('AC', '2025-06-01', [line('606', 300, 0), line('44566', 60, 0), line('401', 0, 360, ['F00001', 'Papeterie'])])
+
+    const closed = await closeFiscalYear(c.id, c.fy2025)
+    expect(closed.success).toBe(true)
+    const lines = await prisma.entryLine.findMany({
+      where: { accountingEntryId: closed.openingEntryId! },
+      select: { debit: true, credit: true, auxiliaryAccountNumber: true, auxiliaryAccountLabel: true, account: { select: { code: true } } },
+    })
+    const of = (code: string) => lines.filter((l) => l.account.code === code).map((l) => [l.auxiliaryAccountNumber, Number(l.debit) - Number(l.credit), l.auxiliaryAccountLabel])
+    // Martin SA paid in full: no line; Durand SARL owes 600; the supplier is owed 360
+    expect(of('411')).toEqual([['C00002', 600, 'Durand SARL']])
+    expect(of('401')).toEqual([['F00001', -360, 'Papeterie']])
+  })
+
   it('keeps 31/12 in its year whatever the server timezone', async () => {
     const c = await createCompany()
     await bookYear(c)
