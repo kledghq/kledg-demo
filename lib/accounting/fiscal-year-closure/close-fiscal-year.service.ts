@@ -21,6 +21,7 @@
  * is a separate entry of the next year, voted by the shareholders.
  */
 
+import { sealFiscalYearInTx } from '@/lib/accounting/integrity/ledger-integrity.service'
 import { prisma } from '@/lib/prisma'
 import { logger } from '@/lib/logger'
 import { ConflictError, NotFoundError, ValidationError } from '@/lib/accounting/errors'
@@ -32,6 +33,7 @@ import {
   LOSS_ACCOUNT,
   OpeningEntryImbalanceError,
   PROFIT_ACCOUNT,
+  splitOpeningByTiers,
 } from './closing-entries'
 import {
   CLOSING_JOURNAL,
@@ -44,7 +46,10 @@ import {
   createValidatedEntry,
   ensureAccounts,
   ensureJournal,
+  findNextFiscalYear,
+  loadAuxiliaryBalances,
   loadYearBalances,
+  nextFiscalYearConflict,
   nextFiscalYearDates,
 } from './ledger'
 import { lockFiscalYearRow } from './lock'
@@ -117,10 +122,16 @@ export async function closeFiscalYear(
           where: { id: companyId },
           select: { closingDay: true, closingMonth: true },
         })
-        const next = await tx.fiscalYear.upsert({
-          where: { companyId_year: { companyId, year: fiscalYear.year + 1 } },
-          update: {},
-          create: {
+        // The year starting the next day, whatever its number; created when missing, never over another year (#125).
+        // Same advisory lock as the creations of fiscal years (manage-fiscal-years.service.ts).
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`kledg:fiscal-years:${companyId}`}))`
+        const found = await findNextFiscalYear(tx, companyId, fiscalYear.endDate, { id: true, year: true, startDate: true })
+        if (!found) {
+          const conflict = await nextFiscalYearConflict(tx, companyId, fiscalYear.year + 1, dates)
+          if (conflict) throw new ClosingRefused([conflict])
+        }
+        const next = found ?? await tx.fiscalYear.create({
+          data: {
             companyId,
             year: fiscalYear.year + 1,
             closingDay: company?.closingDay ?? dates.endDate.getUTCDate(),
@@ -162,14 +173,16 @@ export async function closeFiscalYear(
             pieceDate: booking.pieceDate,
             description: `À-nouveaux de l'exercice ${next.year} (soldes de clôture ${fiscalYear.year})`,
             reference: openingReference(next.year),
-            lines: opening,
-            lineDescription: (line) => `À-nouveau ${line.code} ${labels.get(line.code) ?? ''}`.trim(),
+            // One line per tiers on the customer and supplier accounts (#140)
+            lines: splitOpeningByTiers(opening, await loadAuxiliaryBalances(tx, companyId, fiscalYearId)),
+            lineDescription: (line) => `À-nouveau ${line.code} ${line.auxiliaryAccountLabel || labels.get(line.code) || ''}`.trim(),
             accountIds,
           })
           openingEntryId = entry.id
         }
 
-        // 6. Lock the year and keep a trace of the closing
+        // 6. Lock the year, seal its validated entries (#147) and keep a trace of the closing
+        await sealFiscalYearInTx(tx, { companyId, fiscalYearId, reason: 'closing', userId: options.userId ?? null })
         const closedAt = new Date()
         await tx.fiscalYear.update({
           where: { id: fiscalYearId },
