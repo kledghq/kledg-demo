@@ -207,8 +207,9 @@ describe.skipIf(!available)('private demo sandboxes', () => {
       select: { entryNumber: true },
     })
     for (const draft of drafts) expect(draft.entryNumber).not.toMatch(/^\d+$/)
-    // A few seconds at most (local database).
-    expect(elapsed).toBeLessThan(15_000)
+    // About 10 s on a local database; GitHub runners vary (7 to 19 s seen),
+    // so the bound only catches a real slowdown.
+    expect(elapsed).toBeLessThan(30_000)
   }, 60_000)
 
   it('sends a visitor already in a sandbox back to it instead of creating another', async () => {
