@@ -1,4 +1,5 @@
-import { Github, KeyRound, RefreshCw } from 'lucide-react'
+import { KeyRound, RefreshCw } from 'lucide-react'
+import { GithubIcon } from '@/components/features/updates/github-icon'
 import { DEMO_UNAVAILABLE, requireAdminPersona } from '@/lib/demo/admin/page-guard'
 import { demoReleases } from '@/lib/demo/admin/instance.service'
 import { getDeployedVersion } from '@/lib/updates/version'
@@ -37,7 +38,7 @@ export default async function DemoUpdatesPage() {
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
           <UnavailableButton reason={DEMO_UNAVAILABLE}>
-            <Github aria-hidden />
+            <GithubIcon className="size-4" />
             Connecter GitHub
           </UnavailableButton>
           <UnavailableButton reason={DEMO_UNAVAILABLE}>
